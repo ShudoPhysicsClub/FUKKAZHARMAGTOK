@@ -6,7 +6,7 @@ import { Ed25519 } from './crypto.js';
 const DELIMITER = '\nLINE_BREAK\n';
 const BTR_ADDRESS = '0x0000000000000000';
 const GAS_FEE = 0.5;
-const WS_URL = 'ws://mail.shudo-physics.com:8443';
+const WS_URL = 'wss://mail.shudo-physics.com:443';
 // ============================================================
 // 状態
 // ============================================================
