@@ -2,7 +2,7 @@
 
 ## 1. 概要
 
-修道中学校 物理部コンピュータ班が文化祭向けに開発する独自ブロックチェーン。
+独自ブロックチェーン。
 ネイティブコイン **BTR (Buturi Coin)** と、ユーザーが自由に作成できるトークンシステム、
 組み込み型AMM（自動マーケットメイカー）を持つ。
 
@@ -14,7 +14,7 @@
 
 ### 2.1 シードノード
 
-- ホスト: `shudo-physics.f5.si`（初期）
+- ホスト: `mail.shudo-physics.com`（初期）
 - 役割:
   - ノード発見（新ノードにノードリストを提供）
   - ノード間通信の中継（TCP）
@@ -22,22 +22,33 @@
   - 分散乱数生成の合図・取りまとめ
   - アップデート配信の中継
   - 管理画面（Web UI）のホスト
+  - 最新ノードコードの保持・新ノードへの配布
 - チェーンデータは保持しない（軽量）
 - SSL証明書: Let's Encrypt
 
 ### 2.2 シードノード複数台構成
 
-- シードノード一覧は `seeds.json` で管理（root署名付きアップデートで配布）
+- シードノード一覧は `seeds.json` で管理（root署名付き）
+- `seeds.json` はCDNで配布、root署名で改ざん検知
 - シードノード間は常時TCP接続を維持
 - プライマリ/セカンダリの役割分担
 
-```
-seeds.json:
+```json
+// seeds.json（root署名付き）
 {
-  seeds: [
-    { host: 'shudo-physics.f5.si', priority: 1, publicKey: '...' },
-    { host: 'seed2.example.com', priority: 2, publicKey: '...' }
-  ]
+  "seeds": [
+    { "host": "shudo-physics.f5.si", "priority": 1, "publicKey": "..." },
+    { "host": "seed2.example.com", "priority": 2, "publicKey": "..." }
+  ],
+  "signature": "rootのEd25519署名"
+}
+```
+
+**seeds.json の検証:**
+```typescript
+function verifySeedsJson(seedsData: any): boolean {
+  const { signature, ...rest } = seedsData;
+  return ed25519.verify(canonicalJSON(rest), signature, ROOT_KEY);
 }
 ```
 
@@ -59,6 +70,7 @@ seeds.json:
 - ノードリスト
 - `trusted_keys.json`（メンバー公開鍵）
 - 分散乱数の結果
+- 最新ノードコード（UpdatePackage）
 - ハートビート（5秒間隔）
 
 **seeds.json の更新:**
@@ -174,13 +186,16 @@ socket.on('data', (data) => {
 | `primary_is` | プライマリ返答 |
 | `get_seed_list` | シードノードリスト取得 |
 | `seed_list` | シードノードリスト返答 |
+| `get_latest_files` | 最新ファイル一式要求 |
+| `latest_files` | 最新ファイル一式返答 |
 
 ### 2.8 ノード発見
 
-1. `seeds.json` を読み込み、優先度順にシードノードに接続
-2. 接続したシードノードからノードリスト取得
-3. 失敗時: ローカルキャッシュから前回のピアに接続
-4. 最終手段: ローカルネットワークでマルチキャスト探索
+1. CDNから `seeds.json` を取得し、root署名を検証
+2. 優先度順にシードノードに接続
+3. 接続したシードノードからノードリスト取得
+4. 失敗時: ローカルキャッシュから前回のピアに接続
+5. 最終手段: ローカルネットワークでマルチキャスト探索
 
 ### 2.9 接続管理
 
@@ -192,7 +207,7 @@ socket.on('data', (data) => {
 ```
 切断検出
   │
-  └─ seeds.json読む
+  └─ seeds.json読む（ローカルキャッシュ）
       │
       ├─ seed1に再接続 → 成功 → 差分同期 → 完了
       ├─ 失敗 → seed2に接続 → 成功 → 差分同期 → 完了
@@ -233,6 +248,71 @@ async function syncDiff() {
 4. チャンク単位で受信 & ハッシュチェーン検証
 5. 同期中の新ブロックはキューに溜める
 6. 同期完了後にキューのブロックを適用
+
+### 2.11 新ノード初回起動
+
+新ノードは `launcher.ts` のみを持てばよい（root公開鍵 + CDN URLがハードコード済み）。
+
+```
+launcher.ts起動
+  │
+  ├─ 1. CDNからseeds.json取得
+  │     └─ root署名検証
+  │
+  ├─ 2. 優先度順にシードノードに接続
+  │
+  ├─ 3. シードノードに最新ファイル要求
+  │     { type: 'get_latest_files' }
+  │
+  ├─ 4. シードノードが返答
+  │     {
+  │       type: 'latest_files',
+  │       data: {
+  │         nodeCode: {
+  │           version: '1.2.0',
+  │           code: '...',
+  │           hash: '...',
+  │           signer: '...',
+  │           signature: '...'
+  │         },
+  │         trustedKeys: { keys: [...] }
+  │       }
+  │     }
+  │
+  ├─ 5. ランチャーが署名検証
+  │     ├─ trusted_keys内の公開鍵で署名確認
+  │     └─ sha256(code) === hash 確認
+  │
+  ├─ 6. node.js書き出し + trusted_keys.json保存 + seeds.jsonローカルキャッシュ
+  │
+  ├─ 7. node.jsをfork
+  │
+  └─ 8. node.jsがチェーン同期開始
+```
+
+**シードノード側の最新コード保持:**
+```typescript
+let latestNodeCode: UpdatePackage | null = null;
+
+// アップデート受信時に保存
+function onUpdate(update: UpdatePackage) {
+  if (verifyUpdate(update)) {
+    latestNodeCode = update;
+    broadcastToNodes(update);
+  }
+}
+
+// 新ノードからの要求に応答
+function onGetLatestFiles(conn: Socket) {
+  conn.write(JSON.stringify({
+    type: 'latest_files',
+    data: {
+      nodeCode: latestNodeCode,
+      trustedKeys: JSON.parse(readFileSync('./trusted_keys.json', 'utf-8'))
+    }
+  }) + DELIMITER);
+}
+```
 
 ---
 
@@ -682,7 +762,7 @@ async function generateRandom() {
 
 ### 12.3 信頼チェーン
 
-- rootのEd25519公開鍵をシードノードのコードにハードコード（信頼の起点）
+- rootのEd25519公開鍵をランチャーとシードノードのコードにハードコード（信頼の起点）
 - メンバー追加時: 追加者がEd25519で新メンバーの公開鍵 + ロールに署名
 - メンバーがさらに別のメンバーを追加可能（ツリー構造）
 
@@ -692,9 +772,10 @@ async function generateRandom() {
 - root公開鍵: コードにハードコード
 - メンバー公開鍵: `trusted_keys.json` で管理
 - シードノード間で `trusted_keys.json` を常に同期
+- 最新ノードコード（UpdatePackage）を保持
 
 **フルノード（ラズパイ）:**
-- 初回起動時: シードノードからTLS経由でroot公開鍵を取得
+- 初回起動時: ランチャーがCDNからseeds.json取得 → シードノードに接続 → 最新ファイル取得
 - `trusted_keys.json` もシードノードから取得
 - 以降は定期同期
 
@@ -736,26 +817,26 @@ function canUpdateSeeds(publicKey: string): boolean {
 ### 13.1 ランチャー方式
 
 ランチャー（`launcher.ts`）が署名検証とプロセス管理を担当。ランチャー自体は更新しない。
+新ノードはランチャーのみを持てばよい（root公開鍵 + CDN URLがハードコード済み）。
 
 ```typescript
 // launcher.ts（土台、更新不要）
 import { fork } from 'child_process';
 
-const ROOT_KEY = 'マインのEd25519公開鍵'; // ハードコード
+const ROOT_KEY = 'rootのEd25519公開鍵'; // ハードコード
+const CDN_URL = 'https://cdn.example.com/btr/seeds.json'; // ハードコード
 const trustedKeys: Map<string, 'root' | 'member'> = new Map();
 trustedKeys.set(ROOT_KEY, 'root');
 
-// 起動時にtrusted_keys.jsonからMAP復元
-loadTrustedKeys();
+// 起動時にtrusted_keys.jsonからMAP復元（なければシードから取得）
+await loadOrFetchTrustedKeys();
 
 function startNode() {
   const node = fork('./node.js');
   node.on('exit', (code) => {
     if (code === 100) {
-      // アップデート適用後の再起動
       startNode();
     } else {
-      // クラッシュ時も再起動（3秒待ち）
       setTimeout(startNode, 3000);
     }
   });
@@ -802,7 +883,7 @@ function onUpdate(update: UpdatePackage) {
 2. ブラウザ内で秘密鍵を使って署名（秘密鍵はサーバーに送らない）
 3. WSSでシードノードに送信
 4. シードノードで `trusted_keys.json` を使って署名者確認 & 署名検証
-5. OK → 全ノードに配布 / NG → 拒否
+5. OK → 最新コードとして保存 & 全ノードに配布 / NG → 拒否
 
 ---
 
