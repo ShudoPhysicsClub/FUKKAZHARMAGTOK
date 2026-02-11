@@ -833,8 +833,8 @@ const genesisBlock = {
     timestampTolerance: 600000,   // ±10分
     maxBlockSize: 3145728,        // 3MB
     admin: {
-      publicKey: 'マインのEd25519公開鍵',
-      address: 'マインのウォレットアドレス',
+      publicKey: 'rootのEd25519公開鍵',
+      address: 'rootのウォレットアドレス',
     }
   },
 
