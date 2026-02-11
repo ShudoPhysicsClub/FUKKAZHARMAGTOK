@@ -1,0 +1,10 @@
+{
+  "seeds": [
+    {
+      "host": "mail.shudo-physics.com",
+      "priority": 1,
+      "publicKey": "04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70"
+    }
+  ],
+  "signature": "a4400dfc41ae4f03790272ef0a1d820ca2d39b501158fa38ccaf3e02058cfdbf53afca616678ab381d0ff2cc3841a4ac23897a57b3685e0998e89d90a5a42501"
+}
