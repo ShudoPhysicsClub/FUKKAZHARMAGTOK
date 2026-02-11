@@ -1,18 +1,12 @@
-"use strict";
 // ============================================================
 // BTR - 信頼管理（権限・鍵管理）
 // crypto.ts の Ed25519 を使用
 // ============================================================
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.TrustManager = void 0;
-const protocol_1 = require("./protocol");
-const crypto_1 = require("./crypto");
-const crypto_2 = require("crypto");
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
+import { canonicalJSON } from './protocol';
+import { Ed25519 } from './crypto';
+import { createHash } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 // ============================================================
 // ヘルパー: hex文字列 ↔ Uint8Array 変換
 // ============================================================
@@ -30,11 +24,11 @@ function stringToBytes(str) {
     return new TextEncoder().encode(str);
 }
 function sha256(data) {
-    return (0, crypto_2.createHash)('sha256').update(data).digest('hex');
+    return createHash('sha256').update(data).digest('hex');
 }
 // ============================================================
-const TRUSTED_KEYS_PATH = path_1.default.resolve('./trusted_keys.json');
-class TrustManager {
+const TRUSTED_KEYS_PATH = path.resolve('./trusted_keys.json');
+export class TrustManager {
     rootKey; // hex文字列（64文字 = 32バイト公開鍵）
     trustedKeys = new Map();
     constructor(rootPublicKey) {
@@ -44,8 +38,8 @@ class TrustManager {
     // --- ファイル管理 ---
     loadTrustedKeys() {
         try {
-            if (fs_1.default.existsSync(TRUSTED_KEYS_PATH)) {
-                const data = JSON.parse(fs_1.default.readFileSync(TRUSTED_KEYS_PATH, 'utf-8'));
+            if (fs.existsSync(TRUSTED_KEYS_PATH)) {
+                const data = JSON.parse(fs.readFileSync(TRUSTED_KEYS_PATH, 'utf-8'));
                 for (const key of data.keys) {
                     this.trustedKeys.set(key.publicKey, key);
                 }
@@ -53,7 +47,7 @@ class TrustManager {
             }
             else {
                 const empty = { keys: [] };
-                fs_1.default.writeFileSync(TRUSTED_KEYS_PATH, JSON.stringify(empty, null, 2));
+                fs.writeFileSync(TRUSTED_KEYS_PATH, JSON.stringify(empty, null, 2));
                 console.log('[Trust] trusted_keys.json を新規作成');
             }
         }
@@ -65,7 +59,7 @@ class TrustManager {
         const data = {
             keys: Array.from(this.trustedKeys.values())
         };
-        fs_1.default.writeFileSync(TRUSTED_KEYS_PATH, JSON.stringify(data, null, 2));
+        fs.writeFileSync(TRUSTED_KEYS_PATH, JSON.stringify(data, null, 2));
     }
     syncTrustedKeys(data) {
         this.trustedKeys.clear();
@@ -121,7 +115,7 @@ class TrustManager {
             const sigBytes = hexToBytes(signature);
             const msgBytes = stringToBytes(message);
             const pubBytes = hexToBytes(publicKey);
-            return await crypto_1.Ed25519.verify(sigBytes, msgBytes, pubBytes);
+            return await Ed25519.verify(sigBytes, msgBytes, pubBytes);
         }
         catch (e) {
             console.error('[Trust] Ed25519 verify エラー:', e);
@@ -191,11 +185,10 @@ class TrustManager {
     // --- seeds.json 検証 ---
     async verifySeedsJson(seedsData) {
         const { signature, ...rest } = seedsData;
-        return await this.ed25519Verify((0, protocol_1.canonicalJSON)(rest), signature, this.rootKey);
+        return await this.ed25519Verify(canonicalJSON(rest), signature, this.rootKey);
     }
     getRootKey() {
         return this.rootKey;
     }
 }
-exports.TrustManager = TrustManager;
 //# sourceMappingURL=trust.js.map

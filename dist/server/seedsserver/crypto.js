@@ -1,7 +1,4 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Ed25519 = void 0;
-class Ed25519 {
+export class Ed25519 {
     // ── 定数 ──
     static p = 2n ** 255n - 19n;
     static L = 2n ** 252n + 27742317777372353535851937790883648493n;
@@ -442,5 +439,4 @@ class Ed25519 {
         return new Uint8Array(pub);
     }
 }
-exports.Ed25519 = Ed25519;
 //# sourceMappingURL=crypto.js.map

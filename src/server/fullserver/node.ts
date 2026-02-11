@@ -471,14 +471,19 @@ function executeSwap(tx: Transaction): void {
 // ============================================================
 
 function verifyBlock(block: Block): { valid: boolean; error?: string } {
+  // 難易度チェック（ノード側の難易度を使う）
+  if (block.difficulty !== currentDifficulty) {
+    return { valid: false, error: `難易度不一致 (期待: ${currentDifficulty}, 受信: ${block.difficulty})` };
+  }
+
   // ハッシュ検証
   const expectedHash: string = computeBlockHash(block);
   if (block.hash !== expectedHash) {
     return { valid: false, error: 'ブロックハッシュ不一致' };
   }
 
-  // PoW検証
-  if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
+  // PoW検証（ノード側の難易度で）
+  if (!block.hash.startsWith('0'.repeat(currentDifficulty))) {
     return { valid: false, error: 'PoW条件を満たしていない' };
   }
 
@@ -734,22 +739,46 @@ async function handlePacket(packet: Packet): Promise<void> {
 
     // --- ブロック受信 ---
     case 'block_broadcast': {
-      const block: Block = packet.data;
+      const { minerId: _mid, ...blockOnly } = packet.data;
+      const block: Block = blockOnly;
       const result = verifyBlock(block);
       if (result.valid) {
         applyBlock(block);
         log('Block', `ブロック適用: #${block.height} by ${block.miner.slice(0, 10)}... (${block.transactions.length}tx)`);
         saveState();
+        // クライアントに結果を返す（難易度・最新ハッシュ含む）
+        sendToSeed({
+          type: 'block_accepted',
+          data: {
+            height: chain.length,
+            hash: block.hash,
+            difficulty: currentDifficulty,
+            reward: calculateReward(chain.length),
+            minerId: packet.data?.minerId,
+          }
+        });
       } else {
         log('Block', `ブロック拒否: ${result.error}`);
+        sendToSeed({
+          type: 'block_rejected',
+          data: {
+            error: result.error,
+            difficulty: currentDifficulty,
+            height: chain.length,
+            hash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
+            minerId: packet.data?.minerId,
+          }
+        });
       }
       break;
     }
 
     // --- トランザクション受信 ---
     case 'tx': {
-      const tx: Transaction = packet.data;
       const clientId: string | undefined = packet.data?.clientId;
+      // clientIdを除去してトランザクションだけにする
+      const { clientId: _cid, ...txOnly } = packet.data;
+      const tx: Transaction = txOnly;
       const result = await verifyTransaction(tx);
 
       if (result.valid) {
@@ -792,16 +821,17 @@ async function handlePacket(packet: Packet): Promise<void> {
       const account: Account = getAccount(address);
       sendToSeed({
         type: 'balance',
-        data: { clientId, address, balance: account.balance, tokens: account.tokens }
+        data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
       });
       break;
     }
 
     case 'get_height': {
       const clientId: string = packet.data?.clientId;
+      const latestHash: string = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
       sendToSeed({
         type: 'height',
-        data: { clientId, height: chain.length }
+        data: { clientId, height: chain.length, difficulty: currentDifficulty, latestHash }
       });
       break;
     }

@@ -1,13 +1,11 @@
-"use strict";
 // ============================================================
 // BTR (Buturi Coin) - フルノード
 // ランチャーからforkされて動く
 // ============================================================
-Object.defineProperty(exports, "__esModule", { value: true });
-const net_1 = require("net");
-const crypto_1 = require("crypto");
-const fs_1 = require("fs");
-const crypto_2 = require("./crypto");
+import { connect } from 'net';
+import { createHash, randomBytes } from 'crypto';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { Ed25519 } from './crypto';
 const DELIMITER = '\nLINE_BREAK\n';
 const BTR_ADDRESS = '0x0000000000000000';
 // ============================================================
@@ -36,7 +34,7 @@ const CONFIG = {
 // ヘルパー
 // ============================================================
 function sha256(data) {
-    return (0, crypto_1.createHash)('sha256').update(data).digest('hex');
+    return createHash('sha256').update(data).digest('hex');
 }
 function hexToBytes(hex) {
     const bytes = new Uint8Array(hex.length / 2);
@@ -128,7 +126,7 @@ async function verifyTransaction(tx) {
     const { signature, ...rest } = tx;
     const message = canonicalJSON(rest);
     try {
-        const valid = await crypto_2.Ed25519.verify(hexToBytes(signature), new TextEncoder().encode(message), hexToBytes(tx.publicKey));
+        const valid = await Ed25519.verify(hexToBytes(signature), new TextEncoder().encode(message), hexToBytes(tx.publicKey));
         if (!valid)
             return { valid: false, error: '署名が無効' };
     }
@@ -238,7 +236,7 @@ function applyTransaction(tx, minerAddress) {
         case 'create_token': {
             sender.balance -= CONFIG.TOKEN_CREATION_FEE;
             miner.balance += CONFIG.TOKEN_CREATION_FEE;
-            const tokenAddress = '0x' + (0, crypto_1.randomBytes)(8).toString('hex');
+            const tokenAddress = '0x' + randomBytes(8).toString('hex');
             const poolRatio = tx.data.poolRatio || 0;
             const totalSupply = tx.data.totalSupply;
             const tokenInfo = {
@@ -357,13 +355,17 @@ function executeSwap(tx) {
 // ブロック検証
 // ============================================================
 function verifyBlock(block) {
+    // 難易度チェック（ノード側の難易度を使う）
+    if (block.difficulty !== currentDifficulty) {
+        return { valid: false, error: `難易度不一致 (期待: ${currentDifficulty}, 受信: ${block.difficulty})` };
+    }
     // ハッシュ検証
     const expectedHash = computeBlockHash(block);
     if (block.hash !== expectedHash) {
         return { valid: false, error: 'ブロックハッシュ不一致' };
     }
-    // PoW検証
-    if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
+    // PoW検証（ノード側の難易度で）
+    if (!block.hash.startsWith('0'.repeat(currentDifficulty))) {
         return { valid: false, error: 'PoW条件を満たしていない' };
     }
     // チェーン連結
@@ -490,11 +492,11 @@ function rebuildState(newChain) {
 // ============================================================
 function saveState() {
     try {
-        (0, fs_1.writeFileSync)(CONFIG.CHAIN_FILE, JSON.stringify(chain));
+        writeFileSync(CONFIG.CHAIN_FILE, JSON.stringify(chain));
         const accountsObj = Object.fromEntries(accounts);
-        (0, fs_1.writeFileSync)(CONFIG.ACCOUNTS_FILE, JSON.stringify(accountsObj));
+        writeFileSync(CONFIG.ACCOUNTS_FILE, JSON.stringify(accountsObj));
         const tokensObj = Object.fromEntries(tokens);
-        (0, fs_1.writeFileSync)(CONFIG.TOKENS_FILE, JSON.stringify(tokensObj));
+        writeFileSync(CONFIG.TOKENS_FILE, JSON.stringify(tokensObj));
     }
     catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -503,8 +505,8 @@ function saveState() {
 }
 function loadState() {
     try {
-        if ((0, fs_1.existsSync)(CONFIG.CHAIN_FILE)) {
-            const data = JSON.parse((0, fs_1.readFileSync)(CONFIG.CHAIN_FILE, 'utf-8'));
+        if (existsSync(CONFIG.CHAIN_FILE)) {
+            const data = JSON.parse(readFileSync(CONFIG.CHAIN_FILE, 'utf-8'));
             rebuildState(data);
             log('Load', `チェーン読み込み: ${chain.length}ブロック`);
         }
@@ -529,7 +531,7 @@ let seedSocket = null;
 let seedBuffer = '';
 function connectToSeed() {
     log('Net', `シードノードに接続中: ${CONFIG.SEED_HOST}:${CONFIG.SEED_PORT}`);
-    seedSocket = (0, net_1.connect)(CONFIG.SEED_PORT, CONFIG.SEED_HOST, () => {
+    seedSocket = connect(CONFIG.SEED_PORT, CONFIG.SEED_HOST, () => {
         log('Net', '接続成功');
         // ノード登録
         sendToSeed({
@@ -588,22 +590,46 @@ async function handlePacket(packet) {
             break;
         // --- ブロック受信 ---
         case 'block_broadcast': {
-            const block = packet.data;
+            const { minerId: _mid, ...blockOnly } = packet.data;
+            const block = blockOnly;
             const result = verifyBlock(block);
             if (result.valid) {
                 applyBlock(block);
                 log('Block', `ブロック適用: #${block.height} by ${block.miner.slice(0, 10)}... (${block.transactions.length}tx)`);
                 saveState();
+                // クライアントに結果を返す（難易度・最新ハッシュ含む）
+                sendToSeed({
+                    type: 'block_accepted',
+                    data: {
+                        height: chain.length,
+                        hash: block.hash,
+                        difficulty: currentDifficulty,
+                        reward: calculateReward(chain.length),
+                        minerId: packet.data?.minerId,
+                    }
+                });
             }
             else {
                 log('Block', `ブロック拒否: ${result.error}`);
+                sendToSeed({
+                    type: 'block_rejected',
+                    data: {
+                        error: result.error,
+                        difficulty: currentDifficulty,
+                        height: chain.length,
+                        hash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
+                        minerId: packet.data?.minerId,
+                    }
+                });
             }
             break;
         }
         // --- トランザクション受信 ---
         case 'tx': {
-            const tx = packet.data;
             const clientId = packet.data?.clientId;
+            // clientIdを除去してトランザクションだけにする
+            const { clientId: _cid, ...txOnly } = packet.data;
+            const tx = txOnly;
             const result = await verifyTransaction(tx);
             if (result.valid) {
                 pendingTxs.push(tx);
@@ -642,15 +668,16 @@ async function handlePacket(packet) {
             const account = getAccount(address);
             sendToSeed({
                 type: 'balance',
-                data: { clientId, address, balance: account.balance, tokens: account.tokens }
+                data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
             });
             break;
         }
         case 'get_height': {
             const clientId = packet.data?.clientId;
+            const latestHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
             sendToSeed({
                 type: 'height',
-                data: { clientId, height: chain.length }
+                data: { clientId, height: chain.length, difficulty: currentDifficulty, latestHash }
             });
             break;
         }
@@ -689,7 +716,7 @@ async function handlePacket(packet) {
         // --- 分散乱数 ---
         case 'random_request': {
             // 乱数生成 & コミット
-            const myRandom = (0, crypto_1.randomBytes)(32).toString('hex');
+            const myRandom = randomBytes(32).toString('hex');
             const commit = sha256(myRandom);
             // 一時保存（revealで使う）
             global.__btrRandomValue = myRandom;
@@ -717,7 +744,7 @@ async function handlePacket(packet) {
         }
         // --- trusted_keys同期 ---
         case 'sync_trusted_keys': {
-            (0, fs_1.writeFileSync)('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
+            writeFileSync('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
             log('Trust', 'trusted_keys.json 同期');
             break;
         }

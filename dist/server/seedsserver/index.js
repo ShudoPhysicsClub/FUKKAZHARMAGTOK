@@ -1,20 +1,15 @@
-"use strict";
 // ============================================================
 // BTR (Buturi Coin) - シードノード メインサーバー
 // ============================================================
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-const net_1 = __importDefault(require("net"));
-const ws_1 = require("ws");
-const https_1 = require("https");
-const http_1 = require("http");
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
-const protocol_1 = require("./protocol");
-const trust_1 = require("./trust");
-const random_1 = require("./random");
+import net from 'net';
+import { WebSocketServer } from 'ws';
+import { createServer as createHTTPSServer } from 'https';
+import { createServer as createHTTPServer } from 'http';
+import fs from 'fs';
+import path from 'path';
+import { PacketBuffer, sendTCP, sendWS } from './protocol';
+import { TrustManager } from './trust';
+import { RandomManager } from './random';
 // ============================================================
 // 設定
 // ============================================================
@@ -55,8 +50,8 @@ function log(category, message) {
 // ============================================================
 function loadSeeds() {
     try {
-        if (fs_1.default.existsSync(CONFIG.SEEDS_PATH)) {
-            const data = JSON.parse(fs_1.default.readFileSync(CONFIG.SEEDS_PATH, 'utf-8'));
+        if (fs.existsSync(CONFIG.SEEDS_PATH)) {
+            const data = JSON.parse(fs.readFileSync(CONFIG.SEEDS_PATH, 'utf-8'));
             log('Seeds', `${data.seeds.length}件のシードノード読み込み`);
             return data.seeds;
         }
@@ -86,9 +81,9 @@ function connectToSeed(seed) {
     if (seedPeers.has(seed.host))
         return;
     log('Seeds', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT}`);
-    const socket = net_1.default.connect(CONFIG.SEED_PORT, seed.host, () => {
+    const socket = net.connect(CONFIG.SEED_PORT, seed.host, () => {
         log('Seeds', `シードノード接続成功: ${seed.host}`);
-        const buffer = new protocol_1.PacketBuffer();
+        const buffer = new PacketBuffer();
         const conn = {
             socket, buffer,
             host: seed.host,
@@ -97,8 +92,8 @@ function connectToSeed(seed) {
             lastPing: Date.now(),
         };
         seedPeers.set(seed.host, conn);
-        (0, protocol_1.sendTCP)(socket, { type: 'seed_hello', data: { host: getMyHost(), priority: myPriority } });
-        (0, protocol_1.sendTCP)(socket, { type: 'sync_trusted_keys', data: trustManager.getTrustedKeysFile() });
+        sendTCP(socket, { type: 'seed_hello', data: { host: getMyHost(), priority: myPriority } });
+        sendTCP(socket, { type: 'sync_trusted_keys', data: trustManager.getTrustedKeysFile() });
         socket.on('data', (data) => {
             const packets = buffer.feed(data.toString());
             for (const packet of packets)
@@ -144,14 +139,14 @@ function findPrimaryHost() {
 }
 function broadcastToSeeds(packet) {
     for (const [, conn] of seedPeers)
-        (0, protocol_1.sendTCP)(conn.socket, packet);
+        sendTCP(conn.socket, packet);
 }
 // ============================================================
 // シードノード間TCPサーバー（ポート40000）
 // ============================================================
 function startSeedServer() {
-    const server = net_1.default.createServer((socket) => {
-        const buffer = new protocol_1.PacketBuffer();
+    const server = net.createServer((socket) => {
+        const buffer = new PacketBuffer();
         let peerHost = socket.remoteAddress || 'unknown';
         log('Seeds', `シードノードからの接続受付: ${peerHost}`);
         socket.on('data', (data) => {
@@ -197,7 +192,7 @@ function handleSeedPacket(peerHost, packet) {
         case 'ping':
             if (conn) {
                 conn.lastPing = Date.now();
-                (0, protocol_1.sendTCP)(conn.socket, { type: 'pong' });
+                sendTCP(conn.socket, { type: 'pong' });
             }
             break;
         case 'pong':
@@ -212,7 +207,7 @@ function handleSeedPacket(peerHost, packet) {
             break;
         case 'who_is_primary':
             if (conn)
-                (0, protocol_1.sendTCP)(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
+                sendTCP(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
             break;
         case 'random_result':
             broadcastToNodes(packet);
@@ -223,7 +218,7 @@ function handleSeedPacket(peerHost, packet) {
                 trustManager.verifyUpdate(packet.data).then(valid => {
                     if (valid) {
                         latestNodeCode = packet.data;
-                        fs_1.default.writeFileSync('./latest_update.json', JSON.stringify(packet.data));
+                        fs.writeFileSync('./latest_update.json', JSON.stringify(packet.data));
                         broadcastToNodes(packet);
                         log('Seeds', `アップデート同期: v${packet.data.version} from ${peerHost}`);
                     }
@@ -249,7 +244,7 @@ function startSeedHeartbeat() {
                 determinePrimary();
                 continue;
             }
-            (0, protocol_1.sendTCP)(conn.socket, { type: 'ping', timestamp: now });
+            sendTCP(conn.socket, { type: 'ping', timestamp: now });
         }
     }, CONFIG.HEARTBEAT_INTERVAL);
 }
@@ -257,9 +252,9 @@ function startSeedHeartbeat() {
 // TCPサーバー（フルノード用 :5000）
 // ============================================================
 function startTCPServer() {
-    const server = net_1.default.createServer((socket) => {
+    const server = net.createServer((socket) => {
         const nodeId = generateId('node');
-        const buffer = new protocol_1.PacketBuffer();
+        const buffer = new PacketBuffer();
         const conn = {
             socket, buffer,
             info: { id: nodeId, host: socket.remoteAddress, connectedAt: Date.now(), lastPing: Date.now(), chainHeight: 0 }
@@ -288,25 +283,25 @@ function startTCPServer() {
 // ============================================================
 function startWSSServer() {
     let server;
-    if (fs_1.default.existsSync(CONFIG.SSL_CERT) && fs_1.default.existsSync(CONFIG.SSL_KEY)) {
-        server = (0, https_1.createServer)({
-            cert: fs_1.default.readFileSync(CONFIG.SSL_CERT),
-            key: fs_1.default.readFileSync(CONFIG.SSL_KEY),
+    if (fs.existsSync(CONFIG.SSL_CERT) && fs.existsSync(CONFIG.SSL_KEY)) {
+        server = createHTTPSServer({
+            cert: fs.readFileSync(CONFIG.SSL_CERT),
+            key: fs.readFileSync(CONFIG.SSL_KEY),
         });
         server.listen(CONFIG.WSS_PORT, () => {
             log('WSS', `クライアント用WSSサーバー起動: port ${CONFIG.WSS_PORT} (HTTPS)`);
         });
     }
     else {
-        server = (0, http_1.createServer)();
+        server = createHTTPServer();
         server.listen(CONFIG.WSS_DEV_PORT, () => {
             log('WSS', `クライアント用WSサーバー起動: port ${CONFIG.WSS_DEV_PORT} (HTTP, 開発モード)`);
         });
     }
-    const wss = new ws_1.WebSocketServer({ server });
+    const wss = new WebSocketServer({ server });
     wss.on('connection', (ws) => {
         const clientId = generateId('client');
-        const buffer = new protocol_1.PacketBuffer();
+        const buffer = new PacketBuffer();
         const conn = { ws, buffer, id: clientId, connectedAt: Date.now() };
         clients.set(clientId, conn);
         log('WSS', `クライアント接続: ${clientId}`);
@@ -332,7 +327,7 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'register':
             conn.info.chainHeight = packet.data?.chainHeight || 0;
-            (0, protocol_1.sendTCP)(conn.socket, {
+            sendTCP(conn.socket, {
                 type: 'node_list',
                 data: { nodes: Array.from(fullNodes.values()).map(n => ({ id: n.info.id, host: n.info.host, chainHeight: n.info.chainHeight })) }
             });
@@ -340,15 +335,40 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'height':
             conn.info.chainHeight = packet.data?.height || 0;
+            // clientId付きならクライアントへの返答
+            if (packet.data?.clientId) {
+                const client = clients.get(packet.data.clientId);
+                if (client)
+                    sendWS(client.ws, packet);
+            }
             break;
         case 'block_broadcast':
             broadcastToNodes(packet, nodeId);
-            broadcastToClients({ type: 'new_block', data: packet.data });
             broadcastToSeeds(packet);
             break;
         case 'tx_broadcast':
             broadcastToNodes(packet, nodeId);
             break;
+        case 'block_accepted': {
+            // 全クライアントに new_block として配信
+            broadcastToClients({ type: 'new_block', data: packet.data });
+            // 特定のマイナーにも個別に返す
+            if (packet.data?.minerId) {
+                const client = clients.get(packet.data.minerId);
+                if (client)
+                    sendWS(client.ws, { type: 'block_accepted', data: packet.data });
+            }
+            break;
+        }
+        case 'block_rejected': {
+            // マイナーに拒否理由と正しい難易度を返す
+            if (packet.data?.minerId) {
+                const client = clients.get(packet.data.minerId);
+                if (client)
+                    sendWS(client.ws, { type: 'block_rejected', data: packet.data });
+            }
+            break;
+        }
         case 'balance':
         case 'chain':
         case 'chain_chunk':
@@ -356,10 +376,11 @@ function handleNodePacket(nodeId, packet) {
         case 'token_info':
         case 'rate':
         case 'tx_result':
+        case 'block_template':
             if (packet.data?.clientId) {
                 const client = clients.get(packet.data.clientId);
                 if (client)
-                    (0, protocol_1.sendWS)(client.ws, packet);
+                    sendWS(client.ws, packet);
             }
             break;
         case 'random_commit':
@@ -369,11 +390,11 @@ function handleNodePacket(nodeId, packet) {
             handleRandomReveal(nodeId, packet);
             break;
         case 'get_latest_files':
-            (0, protocol_1.sendTCP)(conn.socket, { type: 'latest_files', data: { nodeCode: latestNodeCode, trustedKeys: trustManager.getTrustedKeysFile() } });
+            sendTCP(conn.socket, { type: 'latest_files', data: { nodeCode: latestNodeCode, trustedKeys: trustManager.getTrustedKeysFile() } });
             log('TCP', `最新ファイル配布: ${nodeId}`);
             break;
         case 'who_is_primary':
-            (0, protocol_1.sendTCP)(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
+            sendTCP(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
             break;
         default: log('TCP', `不明なパケット: ${packet.type} from ${nodeId}`);
     }
@@ -397,6 +418,7 @@ function handleClientPacket(clientId, packet) {
         case 'get_height':
         case 'get_token':
         case 'get_rate':
+        case 'get_block_template':
             relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
             break;
         case 'update':
@@ -414,12 +436,12 @@ function handleClientPacket(clientId, packet) {
 function broadcastToNodes(packet, excludeId) {
     for (const [id, conn] of fullNodes) {
         if (id !== excludeId)
-            (0, protocol_1.sendTCP)(conn.socket, packet);
+            sendTCP(conn.socket, packet);
     }
 }
 function broadcastToClients(packet) {
     for (const [, conn] of clients)
-        (0, protocol_1.sendWS)(conn.ws, packet);
+        sendWS(conn.ws, packet);
 }
 function relayToNode(packet) {
     const nodes = Array.from(fullNodes.values());
@@ -427,12 +449,12 @@ function relayToNode(packet) {
         if (packet.data?.clientId) {
             const client = clients.get(packet.data.clientId);
             if (client)
-                (0, protocol_1.sendWS)(client.ws, { type: 'error', data: { message: 'フルノードが利用できません' } });
+                sendWS(client.ws, { type: 'error', data: { message: 'フルノードが利用できません' } });
         }
         return;
     }
     const best = nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b);
-    (0, protocol_1.sendTCP)(best.socket, packet);
+    sendTCP(best.socket, packet);
 }
 // ============================================================
 // アップデート & メンバー管理
@@ -443,15 +465,15 @@ async function handleUpdateFromClient(clientId, packet) {
     if (!client)
         return;
     if (!await trustManager.verifyUpdate(update)) {
-        (0, protocol_1.sendWS)(client.ws, { type: 'update_result', data: { success: false, message: '検証失敗' } });
+        sendWS(client.ws, { type: 'update_result', data: { success: false, message: '検証失敗' } });
         return;
     }
     latestNodeCode = update;
-    fs_1.default.writeFileSync('./latest_update.json', JSON.stringify(update));
+    fs.writeFileSync('./latest_update.json', JSON.stringify(update));
     log('Update', `アップデート受信: v${update.version} by ${update.signer.slice(0, 16)}...`);
     broadcastToNodes({ type: 'update', data: update });
     broadcastToSeeds({ type: 'update', data: update });
-    (0, protocol_1.sendWS)(client.ws, { type: 'update_result', data: { success: true, message: `v${update.version} を配布しました` } });
+    sendWS(client.ws, { type: 'update_result', data: { success: true, message: `v${update.version} を配布しました` } });
 }
 async function handleAddMember(clientId, packet) {
     const { publicKey, role, addedBy, signature } = packet.data;
@@ -459,7 +481,7 @@ async function handleAddMember(clientId, packet) {
     if (!client)
         return;
     const success = await trustManager.addMember(publicKey, role, addedBy, signature);
-    (0, protocol_1.sendWS)(client.ws, { type: 'add_member_result', data: { success } });
+    sendWS(client.ws, { type: 'add_member_result', data: { success } });
     if (success) {
         const keysData = trustManager.getTrustedKeysFile();
         broadcastToNodes({ type: 'sync_trusted_keys', data: keysData });
@@ -481,7 +503,7 @@ function startRandomRound() {
     for (const nodeId of result.selectedNodes) {
         const conn = fullNodes.get(nodeId);
         if (conn)
-            (0, protocol_1.sendTCP)(conn.socket, { type: 'random_request' });
+            sendTCP(conn.socket, { type: 'random_request' });
     }
     setTimeout(() => {
         randomManager.handleTimeout();
@@ -494,7 +516,7 @@ function handleRandomCommit(nodeId, packet) {
     if (allCommitted) {
         for (const [id, conn] of fullNodes) {
             if (randomManager['selectedNodes'].includes(id))
-                (0, protocol_1.sendTCP)(conn.socket, { type: 'random_reveal_request' });
+                sendTCP(conn.socket, { type: 'random_reveal_request' });
         }
     }
 }
@@ -524,7 +546,7 @@ function startHeartbeat() {
                 broadcastToNodes({ type: 'node_left', data: { id: nodeId } });
                 continue;
             }
-            (0, protocol_1.sendTCP)(conn.socket, { type: 'ping', timestamp: now });
+            sendTCP(conn.socket, { type: 'ping', timestamp: now });
         }
     }, CONFIG.HEARTBEAT_INTERVAL);
 }
@@ -546,12 +568,12 @@ function main() {
     console.log('========================================');
     console.log('  BTR (Buturi Coin) Seed Node');
     console.log('========================================');
-    trustManager = new trust_1.TrustManager(CONFIG.ROOT_PUBLIC_KEY);
-    randomManager = new random_1.RandomManager();
-    const latestCodePath = path_1.default.resolve('./latest_update.json');
-    if (fs_1.default.existsSync(latestCodePath)) {
+    trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
+    randomManager = new RandomManager();
+    const latestCodePath = path.resolve('./latest_update.json');
+    if (fs.existsSync(latestCodePath)) {
         try {
-            latestNodeCode = JSON.parse(fs_1.default.readFileSync(latestCodePath, 'utf-8'));
+            latestNodeCode = JSON.parse(fs.readFileSync(latestCodePath, 'utf-8'));
             log('Init', `最新コード読み込み: v${latestNodeCode?.version}`);
         }
         catch (e) {

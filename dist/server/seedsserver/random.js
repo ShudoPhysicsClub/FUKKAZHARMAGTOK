@@ -1,14 +1,11 @@
-"use strict";
 // ============================================================
 // BTR - 分散乱数生成
 // ============================================================
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.RandomManager = void 0;
-const crypto_1 = require("crypto");
+import { createHash, randomBytes } from 'crypto';
 function sha256(data) {
-    return (0, crypto_1.createHash)('sha256').update(data).digest('hex');
+    return createHash('sha256').update(data).digest('hex');
 }
-class RandomManager {
+export class RandomManager {
     currentRandom = '';
     commits = new Map();
     reveals = new Map();
@@ -102,7 +99,7 @@ class RandomManager {
      * フォールバック乱数生成
      */
     generateFallbackRandom() {
-        return sha256((0, crypto_1.randomBytes)(32).toString('hex') + Date.now());
+        return sha256(randomBytes(32).toString('hex') + Date.now());
     }
     /**
      * 現在のフェーズ
@@ -123,5 +120,4 @@ class RandomManager {
         return this.reveals.size === this.selectedNodes.length;
     }
 }
-exports.RandomManager = RandomManager;
 //# sourceMappingURL=random.js.map

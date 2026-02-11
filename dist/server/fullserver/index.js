@@ -1,14 +1,12 @@
-"use strict";
 // ============================================================
 // BTR (Buturi Coin) - ランチャー
 // これだけあれば全部始まる
 // ============================================================
-Object.defineProperty(exports, "__esModule", { value: true });
-const child_process_1 = require("child_process");
-const net_1 = require("net");
-const crypto_1 = require("crypto");
-const fs_1 = require("fs");
-const crypto_2 = require("./crypto");
+import { fork } from 'child_process';
+import { connect } from 'net';
+import { createHash } from 'crypto';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { Ed25519 } from './crypto';
 // ============================================================
 // ハードコード（変更不可）
 // ============================================================
@@ -27,7 +25,7 @@ function hexToBytes(hex) {
     return bytes;
 }
 function sha256(data) {
-    return (0, crypto_1.createHash)('sha256').update(data).digest('hex');
+    return createHash('sha256').update(data).digest('hex');
 }
 function canonicalJSON(obj) {
     if (typeof obj !== 'object' || obj === null)
@@ -48,9 +46,9 @@ function log(msg) {
 // ============================================================
 async function fetchSeeds() {
     // まずローカルキャッシュを試す
-    if ((0, fs_1.existsSync)('./seeds.json')) {
+    if (existsSync('./seeds.json')) {
         try {
-            const cached = JSON.parse((0, fs_1.readFileSync)('./seeds.json', 'utf-8'));
+            const cached = JSON.parse(readFileSync('./seeds.json', 'utf-8'));
             log('seeds.json ローカルキャッシュ使用');
             return cached.seeds;
         }
@@ -66,12 +64,12 @@ async function fetchSeeds() {
         // root署名検証
         const { signature, ...rest } = data;
         const msg = canonicalJSON(rest);
-        const valid = await crypto_2.Ed25519.verify(hexToBytes(signature), new TextEncoder().encode(msg), hexToBytes(ROOT_KEY));
+        const valid = await Ed25519.verify(hexToBytes(signature), new TextEncoder().encode(msg), hexToBytes(ROOT_KEY));
         if (!valid) {
             throw new Error('seeds.json 署名検証失敗');
         }
         // ローカルキャッシュ保存
-        (0, fs_1.writeFileSync)('./seeds.json', JSON.stringify(data, null, 2));
+        writeFileSync('./seeds.json', JSON.stringify(data, null, 2));
         log('seeds.json 取得 & 検証OK');
         return data.seeds;
     }
@@ -79,8 +77,8 @@ async function fetchSeeds() {
         const errMsg = e instanceof Error ? e.message : String(e);
         log(`CDN取得失敗: ${errMsg}`);
         // ローカルキャッシュがあればフォールバック
-        if ((0, fs_1.existsSync)('./seeds.json')) {
-            const cached = JSON.parse((0, fs_1.readFileSync)('./seeds.json', 'utf-8'));
+        if (existsSync('./seeds.json')) {
+            const cached = JSON.parse(readFileSync('./seeds.json', 'utf-8'));
             log('seeds.json ローカルキャッシュにフォールバック');
             return cached.seeds;
         }
@@ -101,7 +99,7 @@ function fetchLatestFiles(seeds) {
             }
             const seed = sorted[index++];
             log(`シードノードに接続中: ${seed.host}:${SEED_PORT}`);
-            const socket = (0, net_1.connect)(SEED_PORT, seed.host, () => {
+            const socket = connect(SEED_PORT, seed.host, () => {
                 log(`接続成功: ${seed.host}`);
                 socket.write(JSON.stringify({ type: 'get_latest_files' }) + DELIMITER);
             });
@@ -155,7 +153,7 @@ async function verifyUpdate(update, trustedKeys) {
         return false;
     }
     // Ed25519署名検証
-    const valid = await crypto_2.Ed25519.verify(hexToBytes(update.signature), new TextEncoder().encode(update.hash), hexToBytes(update.signer));
+    const valid = await Ed25519.verify(hexToBytes(update.signature), new TextEncoder().encode(update.hash), hexToBytes(update.signer));
     if (!valid) {
         log('アップデート: 署名検証失敗');
         return false;
@@ -167,13 +165,13 @@ async function verifyUpdate(update, trustedKeys) {
 // ============================================================
 let nodeProcess = null;
 function startNode() {
-    if (!(0, fs_1.existsSync)('./node.js')) {
+    if (!existsSync('./node.js')) {
         log('node.js が見つかりません、初回ブートを実行');
         boot();
         return;
     }
     log('node.js 起動');
-    nodeProcess = (0, child_process_1.fork)('./node.js');
+    nodeProcess = fork('./node.js');
     nodeProcess.on('exit', (code) => {
         if (code === 100) {
             log('アップデート適用、再起動');
@@ -198,15 +196,15 @@ function startNode() {
 }
 async function handleUpdate(update) {
     let trustedKeys = { keys: [] };
-    if ((0, fs_1.existsSync)('./trusted_keys.json')) {
-        trustedKeys = JSON.parse((0, fs_1.readFileSync)('./trusted_keys.json', 'utf-8'));
+    if (existsSync('./trusted_keys.json')) {
+        trustedKeys = JSON.parse(readFileSync('./trusted_keys.json', 'utf-8'));
     }
     if (!await verifyUpdate(update, trustedKeys)) {
         log('アップデート拒否');
         return;
     }
     log(`アップデート適用: v${update.version}`);
-    (0, fs_1.writeFileSync)('./node.js', update.code);
+    writeFileSync('./node.js', update.code);
     if (nodeProcess) {
         nodeProcess.kill();
     }
@@ -234,8 +232,8 @@ async function boot() {
             return;
         }
         // 4. ファイル書き出し
-        (0, fs_1.writeFileSync)('./node.js', files.nodeCode.code);
-        (0, fs_1.writeFileSync)('./trusted_keys.json', JSON.stringify(files.trustedKeys, null, 2));
+        writeFileSync('./node.js', files.nodeCode.code);
+        writeFileSync('./trusted_keys.json', JSON.stringify(files.trustedKeys, null, 2));
         log(`node.js 書き出し完了 (v${files.nodeCode.version})`);
         // 5. ノード起動
         startNode();
@@ -253,7 +251,7 @@ async function boot() {
 log('========================================');
 log('  BTR (Buturi Coin) Launcher');
 log('========================================');
-if ((0, fs_1.existsSync)('./node.js')) {
+if (existsSync('./node.js')) {
     log('node.js 検出、起動');
     startNode();
 }

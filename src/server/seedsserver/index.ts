@@ -393,15 +393,39 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
       });
       log('TCP', `ノード登録: ${nodeId} (height: ${conn.info.chainHeight})`);
       break;
-    case 'height': conn.info.chainHeight = packet.data?.height || 0; break;
+    case 'height':
+      conn.info.chainHeight = packet.data?.height || 0;
+      // clientId付きならクライアントへの返答
+      if (packet.data?.clientId) {
+        const client = clients.get(packet.data.clientId);
+        if (client) sendWS(client.ws, packet);
+      }
+      break;
     case 'block_broadcast':
       broadcastToNodes(packet, nodeId);
-      broadcastToClients({ type: 'new_block', data: packet.data });
       broadcastToSeeds(packet);
       break;
     case 'tx_broadcast': broadcastToNodes(packet, nodeId); break;
+    case 'block_accepted': {
+      // 全クライアントに new_block として配信
+      broadcastToClients({ type: 'new_block', data: packet.data });
+      // 特定のマイナーにも個別に返す
+      if (packet.data?.minerId) {
+        const client = clients.get(packet.data.minerId);
+        if (client) sendWS(client.ws, { type: 'block_accepted', data: packet.data });
+      }
+      break;
+    }
+    case 'block_rejected': {
+      // マイナーに拒否理由と正しい難易度を返す
+      if (packet.data?.minerId) {
+        const client = clients.get(packet.data.minerId);
+        if (client) sendWS(client.ws, { type: 'block_rejected', data: packet.data });
+      }
+      break;
+    }
     case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
-    case 'token_info': case 'rate': case 'tx_result':
+    case 'token_info': case 'rate': case 'tx_result': case 'block_template':
       if (packet.data?.clientId) {
         const client = clients.get(packet.data.clientId);
         if (client) sendWS(client.ws, packet);
@@ -435,7 +459,7 @@ function handleClientPacket(clientId: string, packet: Packet): void {
     case 'tx':
       relayToNode({ type: 'tx', data: { ...packet.data, clientId } });
       break;
-    case 'get_balance': case 'get_chain': case 'get_height': case 'get_token': case 'get_rate':
+    case 'get_balance': case 'get_chain': case 'get_height': case 'get_token': case 'get_rate': case 'get_block_template':
       relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
       break;
     case 'update': handleUpdateFromClient(clientId, packet); break;
