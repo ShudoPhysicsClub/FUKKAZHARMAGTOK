@@ -345,6 +345,21 @@ function handleNodePacket(nodeId, packet) {
                 data: { nodes: Array.from(fullNodes.values()).map(n => ({ id: n.info.id, host: n.info.host, chainHeight: n.info.chainHeight })) }
             });
             log('TCP', `ノード登録: ${nodeId} (height: ${conn.info.chainHeight})`);
+            // --- チェーン同期: 既存ノードからチェーンを取得させる ---
+            {
+                const otherNodes = Array.from(fullNodes.entries()).filter(([id]) => id !== nodeId);
+                if (otherNodes.length > 0) {
+                    const best = otherNodes.reduce((a, b) => a[1].info.chainHeight >= b[1].info.chainHeight ? a : b);
+                    if (best[1].info.chainHeight > conn.info.chainHeight) {
+                        // 最長チェーンを持つノードに、新ノード向けにチェーンを送るよう依頼
+                        sendTCP(best[1].socket, {
+                            type: 'send_chain_to',
+                            data: { targetNodeId: nodeId, fromHeight: conn.info.chainHeight }
+                        });
+                        log('TCP', `チェーン同期依頼: ${best[0]} → ${nodeId} (from height ${conn.info.chainHeight})`);
+                    }
+                }
+            }
             break;
         case 'height':
             conn.info.chainHeight = packet.data?.height || 0;
@@ -360,6 +375,8 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'tx_broadcast':
             broadcastToNodes(packet, nodeId);
+            // マイニング中のクライアントに新Tx通知 → テンプレート再取得のトリガー
+            broadcastToClients({ type: 'new_tx', data: { count: 1 } });
             break;
         case 'block_accepted': {
             broadcastToClients({ type: 'new_block', data: packet.data });
@@ -406,10 +423,82 @@ function handleNodePacket(nodeId, packet) {
         case 'random_reveal':
             handleRandomReveal(nodeId, packet);
             break;
+        case 'chain_sync': {
+            // 既存ノードが新ノード向けにチェーンデータを送ってきた → 対象ノードに転送
+            const targetId = packet.data?.targetNodeId;
+            if (targetId) {
+                const target = fullNodes.get(targetId);
+                if (target) {
+                    sendTCP(target.socket, {
+                        type: 'chain_sync',
+                        data: {
+                            blocks: packet.data.blocks,
+                            chunkIndex: packet.data.chunkIndex,
+                            totalChunks: packet.data.totalChunks,
+                            totalHeight: packet.data.totalHeight,
+                        }
+                    });
+                    log('TCP', `チェーン同期中継: → ${targetId} (チャンク ${packet.data.chunkIndex}/${packet.data.totalChunks})`);
+                }
+            }
+            break;
+        }
+        case 'request_chain': {
+            // フォールバック: ノードが直接チェーンを要求してきた
+            const fromHeight = packet.data?.fromHeight || 0;
+            const otherNodes = Array.from(fullNodes.entries()).filter(([id]) => id !== nodeId);
+            if (otherNodes.length > 0) {
+                const best = otherNodes.reduce((a, b) => a[1].info.chainHeight >= b[1].info.chainHeight ? a : b);
+                if (best[1].info.chainHeight > fromHeight) {
+                    sendTCP(best[1].socket, {
+                        type: 'send_chain_direct',
+                        data: { targetNodeId: nodeId, fromHeight }
+                    });
+                    log('TCP', `フォールバック同期依頼: ${best[0]} → ${nodeId}`);
+                }
+                else {
+                    // 他に長いチェーンを持つノードがない
+                    sendTCP(conn.socket, { type: 'chain_sync_response', data: { blocks: [] } });
+                }
+            }
+            else {
+                sendTCP(conn.socket, { type: 'chain_sync_response', data: { blocks: [] } });
+            }
+            break;
+        }
+        case 'chain_sync_direct': {
+            // フォールバック: 既存ノードが直接チェーンを返してきた → 要求元に転送
+            const targetId = packet.data?.targetNodeId;
+            if (targetId) {
+                const target = fullNodes.get(targetId);
+                if (target) {
+                    sendTCP(target.socket, { type: 'chain_sync_response', data: { blocks: packet.data.blocks } });
+                    log('TCP', `フォールバック同期中継: → ${targetId} (${packet.data.blocks?.length || 0}ブロック)`);
+                }
+            }
+            break;
+        }
         case 'get_latest_files':
             sendTCP(conn.socket, { type: 'latest_files', data: { nodeCode: latestNodeCode, trustedKeys: trustManager.getTrustedKeysFile() } });
             log('TCP', `最新ファイル配布: ${nodeId}`);
             break;
+        case 'check_sync': {
+            // ノードが自分の高さを申告 → 最長ノードより遅れてたら同期を指示
+            const myHeight = packet.data?.height || 0;
+            const otherNodes = Array.from(fullNodes.entries()).filter(([id]) => id !== nodeId);
+            if (otherNodes.length > 0) {
+                const best = otherNodes.reduce((a, b) => a[1].info.chainHeight >= b[1].info.chainHeight ? a : b);
+                if (best[1].info.chainHeight > myHeight + 1) {
+                    sendTCP(best[1].socket, {
+                        type: 'send_chain_to',
+                        data: { targetNodeId: nodeId, fromHeight: myHeight }
+                    });
+                    sendTCP(conn.socket, { type: 'sync_needed', data: { bestHeight: best[1].info.chainHeight } });
+                    log('TCP', `定期同期: ${nodeId} (height ${myHeight}) ← ${best[0]} (height ${best[1].info.chainHeight})`);
+                }
+            }
+            break;
+        }
         case 'who_is_primary':
             sendTCP(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
             break;

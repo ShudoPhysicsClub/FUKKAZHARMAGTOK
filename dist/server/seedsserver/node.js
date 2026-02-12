@@ -552,6 +552,43 @@ function loadState() {
     }
 }
 // ============================================================
+// チェーン同期
+// ============================================================
+let syncBuffer = [];
+let syncExpectedFrom = 0;
+let syncTimer = null;
+let isSyncing = false;
+function startSyncTimeout() {
+    if (syncTimer)
+        clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+        if (isSyncing) {
+            log('Sync', 'タイムアウト — フォールバック: シードに直接チェーン要求');
+            isSyncing = false;
+            syncBuffer = [];
+            // フォールバック: シードサーバー経由で自分からチェーンを要求
+            sendToSeed({ type: 'request_chain', data: { fromHeight: chain.length } });
+            // 2回目のタイムアウト
+            syncTimer = setTimeout(() => {
+                if (chain.length <= 1) {
+                    log('Sync', '同期失敗、ジェネシスから開始');
+                }
+                syncTimer = null;
+            }, 15000);
+        }
+    }, 10000);
+}
+function finishSync() {
+    isSyncing = false;
+    if (syncTimer) {
+        clearTimeout(syncTimer);
+        syncTimer = null;
+    }
+    saveState();
+    sendToSeed({ type: 'height', data: { height: chain.length } });
+    log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
+}
+// ============================================================
 // シードノード接続
 // ============================================================
 let seedSocket = null;
@@ -565,6 +602,9 @@ function connectToSeed() {
             type: 'register',
             data: { chainHeight: chain.length }
         });
+        // 同期待ちタイマー開始
+        isSyncing = true;
+        startSyncTimeout();
     });
     seedSocket.on('data', (data) => {
         seedBuffer += data.toString();
@@ -606,9 +646,16 @@ async function handlePacket(packet) {
             sendToSeed({ type: 'pong' });
             break;
         // --- ノードリスト ---
-        case 'node_list':
-            log('Net', `ノードリスト受信: ${packet.data?.nodes?.length || 0}台`);
+        case 'node_list': {
+            const nodes = packet.data?.nodes || [];
+            log('Net', `ノードリスト受信: ${nodes.length}台`);
+            // 自分しかいない or 自分が最長 → 同期完了
+            if (isSyncing && nodes.length <= 1) {
+                log('Sync', '他ノードなし、同期スキップ');
+                finishSync();
+            }
             break;
+        }
         case 'new_node':
             log('Net', `新ノード参加: ${packet.data?.id}`);
             break;
@@ -928,6 +975,102 @@ async function handlePacket(packet) {
             log('Random', `共通乱数受信: ${commonRandom.slice(0, 16)}...`);
             break;
         }
+        // --- チェーン同期 ---
+        case 'send_chain_to': {
+            // シードサーバーから依頼: 新ノード向けにチェーンを送る
+            const targetNodeId = packet.data?.targetNodeId;
+            const fromHeight = packet.data?.fromHeight || 0;
+            if (chain.length > fromHeight) {
+                const CHUNK_SIZE = 50;
+                const totalChunks = Math.ceil((chain.length - fromHeight) / CHUNK_SIZE);
+                let chunkIndex = 0;
+                for (let i = fromHeight; i < chain.length; i += CHUNK_SIZE) {
+                    chunkIndex++;
+                    const chunk = chain.slice(i, Math.min(i + CHUNK_SIZE, chain.length));
+                    sendToSeed({
+                        type: 'chain_sync',
+                        data: {
+                            targetNodeId,
+                            blocks: chunk,
+                            chunkIndex,
+                            totalChunks,
+                            totalHeight: chain.length,
+                        }
+                    });
+                }
+                log('Sync', `チェーン送信: → ${targetNodeId} (${fromHeight}〜${chain.length}, ${totalChunks}チャンク)`);
+            }
+            break;
+        }
+        case 'chain_sync': {
+            const blocks = packet.data?.blocks;
+            if (!blocks || blocks.length === 0)
+                break;
+            const chunkIndex = packet.data?.chunkIndex || 1;
+            const totalChunks = packet.data?.totalChunks || 1;
+            const totalHeight = packet.data?.totalHeight || 0;
+            log('Sync', `チャンク受信: ${chunkIndex}/${totalChunks} (${blocks.length}ブロック, height ${blocks[0].height}〜${blocks[blocks.length - 1].height})`);
+            // バッファに追加
+            syncBuffer.push(...blocks);
+            // タイムアウトリセット
+            if (syncTimer)
+                clearTimeout(syncTimer);
+            startSyncTimeout();
+            // 全チャンク受信完了チェック
+            if (chunkIndex >= totalChunks || syncBuffer.length >= totalHeight) {
+                log('Sync', `全チャンク受信完了: ${syncBuffer.length}ブロック`);
+                // ソート（念のため）
+                syncBuffer.sort((a, b) => a.height - b.height);
+                if (syncBuffer.length > chain.length) {
+                    if (syncBuffer[0].height === 0) {
+                        selectChain(syncBuffer);
+                    }
+                    else if (syncBuffer[0].height <= chain.length) {
+                        const merged = [...chain.slice(0, syncBuffer[0].height), ...syncBuffer];
+                        selectChain(merged);
+                    }
+                }
+                syncBuffer = [];
+                finishSync();
+            }
+            break;
+        }
+        case 'chain_sync_response': {
+            // フォールバック: シードから直接チェーンを受信
+            const blocks = packet.data?.blocks;
+            if (!blocks || blocks.length === 0) {
+                log('Sync', 'フォールバック応答: ブロックなし');
+                finishSync();
+                break;
+            }
+            log('Sync', `フォールバック受信: ${blocks.length}ブロック`);
+            blocks.sort((a, b) => a.height - b.height);
+            if (blocks.length > chain.length) {
+                if (blocks[0].height === 0) {
+                    selectChain(blocks);
+                }
+                else if (blocks[0].height <= chain.length) {
+                    const merged = [...chain.slice(0, blocks[0].height), ...blocks];
+                    selectChain(merged);
+                }
+            }
+            finishSync();
+            break;
+        }
+        case 'send_chain_direct': {
+            // フォールバック: シードから直接依頼 — チャンク分割せず一括送信
+            const targetNodeId = packet.data?.targetNodeId;
+            const fromHeight = packet.data?.fromHeight || 0;
+            if (chain.length > fromHeight) {
+                const blocks = chain.slice(fromHeight);
+                sendToSeed({
+                    type: 'chain_sync_direct',
+                    data: { targetNodeId, blocks }
+                });
+                log('Sync', `フォールバック送信: → ${targetNodeId} (${blocks.length}ブロック)`);
+            }
+            break;
+        }
         // --- アップデート ---
         case 'update': {
             log('Update', `アップデート受信: v${packet.data?.version}`);
@@ -941,6 +1084,16 @@ async function handlePacket(packet) {
         case 'sync_trusted_keys': {
             writeFileSync('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
             log('Trust', 'trusted_keys.json 同期');
+            break;
+        }
+        case 'sync_needed': {
+            // シードサーバーから「遅れてるから同期して」と言われた
+            log('Sync', `同期要求受信: 現在=${chain.length}, ネットワーク最長=${packet.data?.bestHeight || '?'}`);
+            if (!isSyncing) {
+                isSyncing = true;
+                syncBuffer = [];
+                startSyncTimeout();
+            }
             break;
         }
         default:
@@ -964,6 +1117,12 @@ function startPeriodicTasks() {
     setInterval(() => {
         log('Stats', `チェーン: ${chain.length}ブロック, アカウント: ${accounts.size}, pending: ${pendingTxs.length}, 発行済: ${totalMined.toLocaleString()} BTR`);
     }, 60000);
+    // 同期チェック（2分ごと）: 自分が遅れてたら再同期を要求
+    setInterval(() => {
+        if (!isSyncing) {
+            sendToSeed({ type: 'check_sync', data: { height: chain.length } });
+        }
+    }, 120000);
 }
 // ============================================================
 // エントリーポイント

@@ -260,6 +260,23 @@ function handlePacket(packet: Packet): void {
     case 'random_result':
       addLog('miningLog', `乱数更新: ${(packet.data.random || '').slice(0, 16)}...`, 'info');
       break;
+    case 'new_tx': {
+      // 新Txがmempoolに入った → マイニング中ならテンプレート再取得
+      // ただし連続リスタートを防ぐためデバウンス（最後のnew_txから500ms待つ）
+      if (isMining) {
+        if ((window as any).__newTxDebounce) clearTimeout((window as any).__newTxDebounce);
+        (window as any).__newTxDebounce = setTimeout(() => {
+          if (isMining && mineWorker) {
+            mineWorker.terminate();
+            mineWorker = null;
+            miningStartTime = Date.now();
+            totalHashes = 0;
+            requestBlockTemplate();
+          }
+        }, 500);
+      }
+      break;
+    }
     case 'error':
       addLog('globalLog', `エラー: ${packet.data.message}`, 'error');
       break;

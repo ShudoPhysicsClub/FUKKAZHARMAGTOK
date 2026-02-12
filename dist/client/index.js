@@ -202,6 +202,7 @@ function handlePacket(packet) {
                 pendingTransactions = tmpl.transactions || [];
                 $('chainHeight').textContent = String(chainHeight);
                 $('difficulty').textContent = String(currentDifficulty);
+                addLog('miningLog', `テンプレート受信: height=${chainHeight} tx=${pendingTransactions.length} diff=${currentDifficulty} reward=${latestReward}`, 'info');
                 // テンプレート受信 → マイニング開始
                 if (isMining) {
                     startMineWorker();
@@ -255,6 +256,24 @@ function handlePacket(packet) {
         case 'random_result':
             addLog('miningLog', `乱数更新: ${(packet.data.random || '').slice(0, 16)}...`, 'info');
             break;
+        case 'new_tx': {
+            // 新Txがmempoolに入った → マイニング中ならテンプレート再取得
+            // ただし連続リスタートを防ぐためデバウンス（最後のnew_txから500ms待つ）
+            if (isMining) {
+                if (window.__newTxDebounce)
+                    clearTimeout(window.__newTxDebounce);
+                window.__newTxDebounce = setTimeout(() => {
+                    if (isMining && mineWorker) {
+                        mineWorker.terminate();
+                        mineWorker = null;
+                        miningStartTime = Date.now();
+                        totalHashes = 0;
+                        requestBlockTemplate();
+                    }
+                }, 500);
+            }
+            break;
+        }
         case 'error':
             addLog('globalLog', `エラー: ${packet.data.message}`, 'error');
             break;
@@ -538,7 +557,7 @@ function startMineWorker() {
         reward: latestReward,
         transactions: pendingTransactions,
     };
-    addLog('miningLog', `掘り始め: #${block.height} diff=${currentDifficulty} prev=${latestBlockHash.slice(0, 12)}...`, 'info');
+    addLog('miningLog', `掘り始め: #${block.height} diff=${currentDifficulty} tx=${block.transactions.length} prev=${latestBlockHash.slice(0, 12)}...`, 'info');
     const blob = new Blob([MINE_WORKER_CODE], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
     mineWorker = new Worker(url);
@@ -551,7 +570,7 @@ function startMineWorker() {
         }
         else if (e.data.type === 'found') {
             const minedBlock = { ...block, nonce: e.data.nonce, hash: e.data.hash };
-            addLog('miningLog', `ブロック発見! #${block.height} nonce=${e.data.nonce} hash=${e.data.hash.slice(0, 16)}...`, 'success');
+            addLog('miningLog', `ブロック発見! #${block.height} nonce=${e.data.nonce} tx=${block.transactions.length} hash=${e.data.hash.slice(0, 16)}...`, 'success');
             minedCount++;
             $('minedBlocks').textContent = String(minedCount);
             latestBlockHash = e.data.hash;
