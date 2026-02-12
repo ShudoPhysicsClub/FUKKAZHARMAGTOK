@@ -274,6 +274,7 @@
             <div class="tab-button active" onclick="switchTab('dashboard')">ダッシュボード</div>
             <div class="tab-button" onclick="switchTab('nodes')">ノード管理</div>
             <div class="tab-button" onclick="switchTab('keys')">信頼済み鍵</div>
+            <div class="tab-button" onclick="switchTab('coins')">コイン管理</div>
             <div class="tab-button" onclick="switchTab('transactions')">トランザクション</div>
             <div class="tab-button" onclick="switchTab('accounts')">アカウント検索</div>
             <div class="tab-button" onclick="switchTab('blocks')">ブロック履歴</div>
@@ -331,7 +332,24 @@
                     <div class="stat">
                         <span class="stat-label">Mempool更新</span>
                         <button onclick="refreshMempool()">更新</button>
+                        <button class="danger" onclick="clearMempool()" id="clearMempoolBtn">全消去</button>
                     </div>
+                    
+                    <h3 style="margin-top: 20px;">保留中トランザクション</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>タイプ</th>
+                                <th>送信元</th>
+                                <th>送信先</th>
+                                <th>金額</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mempoolTableBody">
+                            <tr><td colspan="5" style="text-align: center; color: #888;">データなし</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
             
@@ -398,6 +416,35 @@
                             <tr><td colspan="4" style="text-align: center; color: #888;">読み込み中...</td></tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- コイン管理 (root only) -->
+        <div id="tab-coins" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>コイン発行 (Mint)</h2>
+                    <p class="small-text">任意のアドレスにBTRを直接付与します (root権限のみ)</p>
+                    <div class="input-group">
+                        <label>宛先アドレス</label>
+                        <input type="text" id="mintAddress" placeholder="0x...">
+                    </div>
+                    <div class="input-group">
+                        <label>金額 (BTR)</label>
+                        <input type="number" id="mintAmount" placeholder="1000" step="0.01">
+                    </div>
+                    <button onclick="mintCoins()">コイン発行</button>
+                </div>
+                
+                <div class="card">
+                    <h2>一括配給 (Distribute)</h2>
+                    <p class="small-text">複数アドレスへの一括BTR配布 (root権限のみ)</p>
+                    <div class="input-group">
+                        <label>配布リスト (1行ずつ: アドレス,金額)</label>
+                        <textarea id="distributionList" rows="10" placeholder="0x1234...,100&#10;0x5678...,200&#10;0xabcd...,50" style="width: 100%; padding: 10px; background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 5px; font-family: 'Courier New', monospace;"></textarea>
+                    </div>
+                    <button onclick="distributeCoins()">一括配給実行</button>
                 </div>
             </div>
         </div>

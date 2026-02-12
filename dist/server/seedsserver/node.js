@@ -744,7 +744,7 @@ async function handlePacket(packet) {
                 data: {
                     clientId,
                     count: pendingTxs.length,
-                    transactions: pendingTxs.slice(0, 10) // 最初の10件のみ
+                    transactions: pendingTxs.slice(0, 50) // 最初の50件
                 }
             });
             break;
@@ -765,6 +765,100 @@ async function handlePacket(packet) {
             sendToSeed({
                 type: 'admin_transactions',
                 data: { clientId, transactions: recentTxs }
+            });
+            break;
+        }
+        // --- 管理者コマンド (root only) ---
+        case 'admin_mint': {
+            const { address, amount, clientId } = packet.data;
+            // Validate amount
+            if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
+                sendToSeed({
+                    type: 'admin_mint_result',
+                    data: { clientId, success: false, message: '無効な金額です' }
+                });
+                break;
+            }
+            // Validate amount is within reasonable bounds (max 1 billion BTR per mint)
+            if (amount > 1_000_000_000) {
+                sendToSeed({
+                    type: 'admin_mint_result',
+                    data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
+                });
+                break;
+            }
+            log('Admin', `コイン発行実行: ${address} に ${amount} BTR`);
+            const account = getAccount(address);
+            account.balance += amount;
+            saveState();
+            sendToSeed({
+                type: 'admin_mint_result',
+                data: { clientId, success: true, address, amount, newBalance: account.balance }
+            });
+            break;
+        }
+        case 'admin_distribute': {
+            const { distributions, clientId } = packet.data;
+            log('Admin', `一括配給実行: ${distributions.length} 件`);
+            // Validate all distributions first
+            for (const dist of distributions) {
+                const { amount } = dist;
+                if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
+                    sendToSeed({
+                        type: 'admin_distribute_result',
+                        data: { clientId, success: false, message: '無効な金額が含まれています' }
+                    });
+                    return;
+                }
+                if (amount > 1_000_000_000) {
+                    sendToSeed({
+                        type: 'admin_distribute_result',
+                        data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
+                    });
+                    return;
+                }
+            }
+            const results = [];
+            for (const dist of distributions) {
+                const { address, amount } = dist;
+                const account = getAccount(address);
+                account.balance += amount;
+                results.push({ address, amount, newBalance: account.balance });
+            }
+            saveState();
+            sendToSeed({
+                type: 'admin_distribute_result',
+                data: { clientId, success: true, count: results.length, results }
+            });
+            break;
+        }
+        case 'admin_clear_mempool': {
+            const { clientId } = packet.data;
+            const count = pendingTxs.length;
+            log('Admin', `Mempool全消去: ${count} 件のトランザクションを削除`);
+            pendingTxs.length = 0;
+            sendToSeed({
+                type: 'admin_clear_mempool_result',
+                data: { clientId, success: true, count }
+            });
+            break;
+        }
+        case 'admin_remove_tx': {
+            const { signature, clientId } = packet.data;
+            log('Admin', `トランザクション削除: ${signature.slice(0, 16)}...`);
+            const index = pendingTxs.findIndex(tx => tx.signature === signature);
+            let success = false;
+            if (index !== -1) {
+                pendingTxs.splice(index, 1);
+                success = true;
+                log('Admin', `トランザクション削除成功`);
+            }
+            else {
+                log('Admin', `トランザクションが見つかりません`);
+            }
+            sendToSeed({
+                type: 'admin_remove_tx_result',
+                data: { clientId, success, signature }
             });
             break;
         }

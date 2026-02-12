@@ -11,6 +11,7 @@ import { createHash } from 'crypto';
 import { PacketBuffer, sendTCP, sendWS } from './protocol.js';
 import { TrustManager } from './trust.js';
 import { RandomManager } from './random.js';
+import { Ed25519 } from './crypto.js';
 // ============================================================
 // 設定
 // ============================================================
@@ -388,6 +389,10 @@ function handleNodePacket(nodeId, packet) {
         case 'admin_transactions':
         case 'admin_account':
         case 'admin_blocks':
+        case 'admin_mint_result':
+        case 'admin_distribute_result':
+        case 'admin_clear_mempool_result':
+        case 'admin_remove_tx_result':
             if (packet.data?.clientId) {
                 const client = clients.get(packet.data.clientId);
                 if (client)
@@ -464,6 +469,18 @@ function handleClientPacket(clientId, packet) {
             break;
         case 'admin_remove_key':
             handleAdminRemoveKey(clientId, packet);
+            break;
+        case 'admin_mint':
+            handleAdminMint(clientId, packet);
+            break;
+        case 'admin_distribute':
+            handleAdminDistribute(clientId, packet);
+            break;
+        case 'admin_clear_mempool':
+            handleAdminClearMempool(clientId);
+            break;
+        case 'admin_remove_tx':
+            handleAdminRemoveTx(clientId, packet);
             break;
         default: log('WSS', `不明なパケット: ${packet.type} from ${clientId}`);
     }
@@ -542,7 +559,6 @@ async function handleAdminAuth(clientId, packet) {
             });
             return;
         }
-        const { Ed25519 } = await import('./crypto');
         const messageBytes = new TextEncoder().encode(challenge);
         const signatureBytes = hexToBytes(signature);
         const publicKeyBytes = hexToBytes(publicKey);
@@ -564,6 +580,8 @@ async function handleAdminAuth(clientId, packet) {
         log('Admin', `管理者認証成功: ${publicKey.slice(0, 16)}... (${role})`);
     }
     catch (e) {
+        log('Admin', `認証エラー: ${e instanceof Error ? e.message : String(e)}`);
+        console.error('Admin auth error details:', e);
         sendWS(client.ws, {
             type: 'admin_auth_result',
             data: { success: false, message: '認証エラー' }
@@ -737,6 +755,85 @@ async function handleAdminRemoveKey(clientId, packet) {
         broadcastToNodes({ type: 'sync_trusted_keys', data: keysData });
         broadcastToSeeds({ type: 'sync_trusted_keys', data: keysData });
     }
+}
+async function handleAdminMint(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_mint_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
+    const { address, amount } = packet.data;
+    log('Admin', `コイン発行: ${address} に ${amount} BTR`);
+    relayToNode({
+        type: 'admin_mint',
+        data: { address, amount, clientId }
+    });
+}
+async function handleAdminDistribute(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_distribute_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
+    const { distributions } = packet.data;
+    log('Admin', `一括配給: ${distributions.length} 件`);
+    relayToNode({
+        type: 'admin_distribute',
+        data: { distributions, clientId }
+    });
+}
+async function handleAdminClearMempool(clientId) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_clear_mempool_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
+    log('Admin', 'Mempool全消去リクエスト');
+    relayToNode({
+        type: 'admin_clear_mempool',
+        data: { clientId }
+    });
+}
+async function handleAdminRemoveTx(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_remove_tx_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
+    const { signature } = packet.data;
+    log('Admin', `トランザクション削除: ${signature.slice(0, 16)}...`);
+    relayToNode({
+        type: 'admin_remove_tx',
+        data: { signature, clientId }
+    });
 }
 // ============================================================
 // 分散乱数
