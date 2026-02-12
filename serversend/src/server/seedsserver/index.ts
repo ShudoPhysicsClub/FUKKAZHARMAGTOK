@@ -16,6 +16,7 @@ import {
 import { PacketBuffer, sendTCP, sendWS, serializePacket } from './protocol';
 import { TrustManager } from './trust';
 import { RandomManager } from './random';
+import { Ed25519 } from './crypto';
 
 // ============================================================
 // 設定

@@ -17,6 +17,7 @@ import {
 import { PacketBuffer, sendTCP, sendWS, serializePacket } from './protocol.js';
 import { TrustManager } from './trust.js';
 import { RandomManager } from './random.js';
+import { Ed25519 } from './crypto.js';
 
 // ============================================================
 // 設定
@@ -563,7 +564,6 @@ async function handleAdminAuth(clientId: string, packet: Packet): Promise<void> 
       return;
     }
 
-    const { Ed25519 } = await import('./crypto');
     const messageBytes = new TextEncoder().encode(challenge);
     const signatureBytes = hexToBytes(signature);
     const publicKeyBytes = hexToBytes(publicKey);
@@ -589,6 +589,8 @@ async function handleAdminAuth(clientId: string, packet: Packet): Promise<void> 
     });
     log('Admin', `管理者認証成功: ${publicKey.slice(0, 16)}... (${role})`);
   } catch (e) {
+    log('Admin', `認証エラー: ${e instanceof Error ? e.message : String(e)}`);
+    console.error('Admin auth error details:', e);
     sendWS(client.ws, { 
       type: 'admin_auth_result', 
       data: { success: false, message: '認証エラー' } 
