@@ -932,6 +932,25 @@ async function handlePacket(packet: Packet): Promise<void> {
     // --- 管理者コマンド (root only) ---
     case 'admin_mint': {
       const { address, amount, clientId } = packet.data;
+      
+      // Validate amount
+      if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
+        sendToSeed({
+          type: 'admin_mint_result',
+          data: { clientId, success: false, message: '無効な金額です' }
+        });
+        break;
+      }
+      
+      // Validate amount is within reasonable bounds (max 1 billion BTR per mint)
+      if (amount > 1_000_000_000) {
+        sendToSeed({
+          type: 'admin_mint_result',
+          data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
+        });
+        break;
+      }
+      
       log('Admin', `コイン発行実行: ${address} に ${amount} BTR`);
       
       const account = getAccount(address);
@@ -948,6 +967,25 @@ async function handlePacket(packet: Packet): Promise<void> {
     case 'admin_distribute': {
       const { distributions, clientId } = packet.data;
       log('Admin', `一括配給実行: ${distributions.length} 件`);
+      
+      // Validate all distributions first
+      for (const dist of distributions) {
+        const { amount } = dist;
+        if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
+          sendToSeed({
+            type: 'admin_distribute_result',
+            data: { clientId, success: false, message: '無効な金額が含まれています' }
+          });
+          return;
+        }
+        if (amount > 1_000_000_000) {
+          sendToSeed({
+            type: 'admin_distribute_result',
+            data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
+          });
+          return;
+        }
+      }
       
       const results = [];
       for (const dist of distributions) {

@@ -633,9 +633,21 @@ function updateBlocksTable(blocks: any[]): void {
     return;
   }
   
+  // Validate address format (basic hex check)
+  if (!/^0x[0-9a-fA-F]{16}$/.test(address) && !/^[0-9a-fA-F]{16}$/.test(address)) {
+    addLog('systemLog', 'アドレスの形式が正しくありません（16桁の16進数）', 'error');
+    return;
+  }
+  
   const amount = parseFloat(amountStr);
   if (isNaN(amount) || amount <= 0) {
     addLog('systemLog', '有効な金額を入力してください', 'error');
+    return;
+  }
+  
+  // Add maximum limit check
+  if (amount > 1_000_000_000) {
+    addLog('systemLog', '金額が大きすぎます（最大: 1,000,000,000 BTR）', 'error');
     return;
   }
   
@@ -671,8 +683,19 @@ function updateBlocksTable(blocks: any[]): void {
     const address = parts[0].trim();
     const amount = parseFloat(parts[1].trim());
     
+    // Validate address format
+    if (!/^0x[0-9a-fA-F]{16}$/.test(address) && !/^[0-9a-fA-F]{16}$/.test(address)) {
+      addLog('systemLog', `行 ${i + 1}: アドレスの形式が正しくありません`, 'error');
+      return;
+    }
+    
     if (!address || isNaN(amount) || amount <= 0) {
       addLog('systemLog', `行 ${i + 1}: 無効なアドレスまたは金額`, 'error');
+      return;
+    }
+    
+    if (amount > 1_000_000_000) {
+      addLog('systemLog', `行 ${i + 1}: 金額が大きすぎます（最大: 1,000,000,000 BTR）`, 'error');
       return;
     }
     
