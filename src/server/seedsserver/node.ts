@@ -904,7 +904,7 @@ async function handlePacket(packet: Packet): Promise<void> {
         data: { 
           clientId, 
           count: pendingTxs.length,
-          transactions: pendingTxs.slice(0, 10)  // 最初の10件のみ
+          transactions: pendingTxs.slice(0, 50)  // 最初の50件
         }
       });
       break;

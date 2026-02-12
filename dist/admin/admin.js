@@ -152,6 +152,40 @@ function handlePacket(packet) {
                 addLog('keyLog', '鍵の削除に失敗しました', 'error');
             }
             break;
+        case 'admin_mint_result':
+            if (packet.data.success) {
+                addLog('systemLog', `コイン発行成功: ${packet.data.address} に ${packet.data.amount} BTR (新残高: ${packet.data.newBalance})`, 'success');
+            }
+            else {
+                addLog('systemLog', `コイン発行失敗: ${packet.data.message || '不明なエラー'}`, 'error');
+            }
+            break;
+        case 'admin_distribute_result':
+            if (packet.data.success) {
+                addLog('systemLog', `一括配給成功: ${packet.data.count} 件のアドレスに配布しました`, 'success');
+            }
+            else {
+                addLog('systemLog', `一括配給失敗: ${packet.data.message || '不明なエラー'}`, 'error');
+            }
+            break;
+        case 'admin_clear_mempool_result':
+            if (packet.data.success) {
+                addLog('systemLog', `Mempool全消去成功: ${packet.data.count} 件のトランザクションを削除しました`, 'success');
+                window.refreshMempool();
+            }
+            else {
+                addLog('systemLog', `Mempool全消去失敗: ${packet.data.message || '不明なエラー'}`, 'error');
+            }
+            break;
+        case 'admin_remove_tx_result':
+            if (packet.data.success) {
+                addLog('systemLog', `トランザクション削除成功`, 'success');
+                window.refreshMempool();
+            }
+            else {
+                addLog('systemLog', `トランザクション削除失敗`, 'error');
+            }
+            break;
         case 'error':
             addLog('systemLog', `エラー: ${packet.data.message}`, 'error');
             break;
@@ -284,6 +318,25 @@ window.refreshMempool = function () {
 };
 function updateMempool(data) {
     $('mempoolCount').textContent = data.count?.toString() || '0';
+    const tbody = $('mempoolTableBody');
+    const transactions = data.transactions || [];
+    if (transactions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #888;">保留中のトランザクションなし</td></tr>';
+        return;
+    }
+    tbody.innerHTML = transactions.map((tx) => `
+    <tr>
+      <td>${tx.type}</td>
+      <td>${tx.from?.slice(0, 16) || 'N/A'}...</td>
+      <td>${tx.to?.slice(0, 16) || 'N/A'}...</td>
+      <td>${tx.amount || 'N/A'} BTR</td>
+      <td>
+        ${adminWallet?.role === 'root' ? `
+          <button class="danger" onclick="removeTx('${tx.signature}')" style="width: auto; padding: 5px 10px;">削除</button>
+        ` : ''}
+      </td>
+    </tr>
+  `).join('');
 }
 // ============================================================
 // ノード管理
@@ -460,6 +513,86 @@ function updateBlocksTable(blocks) {
     </tr>
   `).join('');
 }
+// ============================================================
+// コイン管理機能 (root only)
+// ============================================================
+window.mintCoins = function () {
+    if (!isAuthenticated || adminWallet?.role !== 'root') {
+        addLog('systemLog', 'コイン発行にはroot権限が必要です', 'error');
+        return;
+    }
+    const address = $val('mintAddress');
+    const amountStr = $val('mintAmount');
+    if (!address || !amountStr) {
+        addLog('systemLog', 'アドレスと金額を入力してください', 'error');
+        return;
+    }
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) {
+        addLog('systemLog', '有効な金額を入力してください', 'error');
+        return;
+    }
+    send({ type: 'admin_mint', data: { address, amount } });
+    addLog('systemLog', `コイン発行リクエスト送信: ${address} に ${amount} BTR`, 'info');
+};
+window.distributeCoins = function () {
+    if (!isAuthenticated || adminWallet?.role !== 'root') {
+        addLog('systemLog', '一括配給にはroot権限が必要です', 'error');
+        return;
+    }
+    const distributionText = $val('distributionList');
+    if (!distributionText.trim()) {
+        addLog('systemLog', '配布リストを入力してください', 'error');
+        return;
+    }
+    const lines = distributionText.trim().split('\n');
+    const distributions = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line)
+            continue;
+        const parts = line.split(',');
+        if (parts.length !== 2) {
+            addLog('systemLog', `行 ${i + 1}: フォーマットエラー（アドレス,金額 の形式で入力してください）`, 'error');
+            return;
+        }
+        const address = parts[0].trim();
+        const amount = parseFloat(parts[1].trim());
+        if (!address || isNaN(amount) || amount <= 0) {
+            addLog('systemLog', `行 ${i + 1}: 無効なアドレスまたは金額`, 'error');
+            return;
+        }
+        distributions.push({ address, amount });
+    }
+    if (distributions.length === 0) {
+        addLog('systemLog', '有効な配布先がありません', 'error');
+        return;
+    }
+    send({ type: 'admin_distribute', data: { distributions } });
+    addLog('systemLog', `一括配給リクエスト送信: ${distributions.length} 件`, 'info');
+};
+window.clearMempool = function () {
+    if (!isAuthenticated || adminWallet?.role !== 'root') {
+        addLog('systemLog', 'Mempool全消去にはroot権限が必要です', 'error');
+        return;
+    }
+    if (!confirm('本当にMempool内の全てのトランザクションを削除しますか？')) {
+        return;
+    }
+    send({ type: 'admin_clear_mempool', data: {} });
+    addLog('systemLog', 'Mempool全消去リクエスト送信', 'info');
+};
+window.removeTx = function (signature) {
+    if (!isAuthenticated || adminWallet?.role !== 'root') {
+        addLog('systemLog', 'トランザクション削除にはroot権限が必要です', 'error');
+        return;
+    }
+    if (!confirm('このトランザクションを削除しますか？')) {
+        return;
+    }
+    send({ type: 'admin_remove_tx', data: { signature } });
+    addLog('systemLog', `トランザクション削除リクエスト送信: ${signature.slice(0, 16)}...`, 'info');
+};
 // ============================================================
 // 初期化
 // ============================================================
