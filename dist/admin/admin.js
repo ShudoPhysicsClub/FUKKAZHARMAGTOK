@@ -528,8 +528,8 @@ window.mintCoins = function () {
         return;
     }
     // Validate address format (basic hex check)
-    if (!/^0x[0-9a-fA-F]{16}$/.test(address) && !/^[0-9a-fA-F]{16}$/.test(address)) {
-        addLog('systemLog', 'アドレスの形式が正しくありません（16桁の16進数）', 'error');
+    if (!address.startsWith('0x') || address.length !== 42) {
+        addLog('systemLog', 'アドレスの形式が不正です (0x + 40文字)', 'error');
         return;
     }
     const amount = parseFloat(amountStr);
