@@ -8,7 +8,7 @@ import { Ed25519 } from './crypto.js';
 const DELIMITER: string = '\nLINE_BREAK\n';
 const BTR_ADDRESS: string = '0x0000000000000000';
 const GAS_FEE: number = 0.5;
-const WS_URL: string = 'ws://mail.shudo-physics.com:8443';
+const WS_URL: string = 'wss://shudo-physics.f5.si:443';
 
 // ============================================================
 // 型定義
