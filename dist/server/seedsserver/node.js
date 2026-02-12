@@ -690,6 +690,25 @@ async function handlePacket(packet) {
             });
             break;
         }
+        case 'get_block_template': {
+            const clientId = packet.data?.clientId;
+            const miner = packet.data?.miner || '';
+            const latestHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
+            const reward = calculateReward(chain.length);
+            sendToSeed({
+                type: 'block_template',
+                data: {
+                    clientId,
+                    height: chain.length,
+                    previousHash: latestHash,
+                    difficulty: currentDifficulty,
+                    reward,
+                    transactions: pendingTxs,
+                    miner,
+                }
+            });
+            break;
+        }
         case 'get_chain': {
             const clientId = packet.data?.clientId;
             let from = packet.data?.from || 0;
