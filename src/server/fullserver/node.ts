@@ -819,10 +819,19 @@ async function handlePacket(packet: Packet): Promise<void> {
       const clientId: string = packet.data?.clientId;
       const address: string = packet.data?.address;
       const account: Account = getAccount(address);
-      sendToSeed({
-        type: 'balance',
-        data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
-      });
+      const adminRequest: boolean = packet.data?.adminRequest || false;
+      
+      if (adminRequest) {
+        sendToSeed({
+          type: 'admin_account',
+          data: { clientId, found: true, account: { address: account.address, balance: account.balance, nonce: account.nonce, tokens: account.tokens } }
+        });
+      } else {
+        sendToSeed({
+          type: 'balance',
+          data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
+        });
+      }
       break;
     }
 
@@ -838,13 +847,29 @@ async function handlePacket(packet: Packet): Promise<void> {
 
     case 'get_chain': {
       const clientId: string = packet.data?.clientId;
-      const from: number = packet.data?.from || 0;
-      const to: number = packet.data?.to || chain.length;
+      let from: number = packet.data?.from || 0;
+      let to: number = packet.data?.to || chain.length;
+      const isAdmin: boolean = packet.data?.admin || false;
+      
+      // 負の値の場合は最新から取得
+      if (from < 0) {
+        from = Math.max(0, chain.length + from);
+        to = chain.length;
+      }
+      
       const chunk: Block[] = chain.slice(from, to);
-      sendToSeed({
-        type: 'chain_chunk',
-        data: { clientId, from, to, blocks: chunk }
-      });
+      
+      if (isAdmin) {
+        sendToSeed({
+          type: 'admin_blocks',
+          data: { clientId, blocks: chunk }
+        });
+      } else {
+        sendToSeed({
+          type: 'chain_chunk',
+          data: { clientId, from, to, blocks: chunk }
+        });
+      }
       break;
     }
 
@@ -867,6 +892,39 @@ async function handlePacket(packet: Packet): Promise<void> {
       sendToSeed({
         type: 'rate',
         data: { clientId, tokenAddress, rate, minute }
+      });
+      break;
+    }
+
+    // --- 管理者パネル用 ---
+    case 'get_mempool': {
+      const clientId: string = packet.data?.clientId;
+      sendToSeed({
+        type: 'admin_mempool',
+        data: { 
+          clientId, 
+          count: pendingTxs.length,
+          transactions: pendingTxs.slice(0, 10)  // 最初の10件のみ
+        }
+      });
+      break;
+    }
+
+    case 'get_recent_transactions': {
+      const clientId: string = packet.data?.clientId;
+      const limit: number = packet.data?.limit || 50;
+      // 最新のブロックからトランザクションを収集
+      const recentTxs: Transaction[] = [];
+      for (let i = chain.length - 1; i >= 0 && recentTxs.length < limit; i--) {
+        const block: Block = chain[i];
+        for (const tx of block.transactions) {
+          if (recentTxs.length >= limit) break;
+          recentTxs.push(tx);
+        }
+      }
+      sendToSeed({
+        type: 'admin_transactions',
+        data: { clientId, transactions: recentTxs }
       });
       break;
     }
