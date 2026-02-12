@@ -28,7 +28,7 @@ function bytesToHex(bytes) {
 }
 async function sha256(message) {
     const msgBuffer = new TextEncoder().encode(message);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer.buffer);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
     return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 function $(id) {
@@ -413,6 +413,7 @@ window.searchAccount = function () {
     if (!isAuthenticated)
         return;
     const address = $val('searchAddress');
+    // BTRアドレスは 0x + 40文字のhex形式
     if (!address.startsWith('0x') || address.length !== 42) {
         addLog('systemLog', 'アドレスの形式が不正です (0x + 40文字)', 'error');
         return;

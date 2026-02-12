@@ -11,7 +11,7 @@ import path from 'path';
 
 import {
   Packet, NodeInfo, UpdatePackage,
-  TrustedKeysFile, SeedsFile, SeedEntry, DELIMITER
+  TrustedKeysFile, SeedsFile, SeedEntry, DELIMITER, Role
 } from './types';
 import { PacketBuffer, sendTCP, sendWS, serializePacket } from './protocol';
 import { TrustManager } from './trust';
@@ -82,6 +82,18 @@ function generateId(prefix: string): string {
 function log(category: string, message: string): void {
   const time = new Date().toISOString().slice(11, 19);
   console.log(`[${time}][${category}] ${message}`);
+}
+
+// ============================================================
+// ヘルパー関数
+// ============================================================
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
 }
 
 // ============================================================
@@ -556,9 +568,27 @@ async function handleAdminAuth(clientId: string, packet: Packet): Promise<void> 
       return;
     }
 
-    // チャレンジ署名を検証（簡易的にチャレンジ = タイムスタンプとして検証）
-    // 実際の実装では crypto.ts の Ed25519.verify を使用
+    // Ed25519署名を検証
+    const { Ed25519 } = await import('./crypto');
+    const messageBytes = new TextEncoder().encode(challenge);
+    const signatureBytes = hexToBytes(signature);
+    const publicKeyBytes = hexToBytes(publicKey);
+    
+    const isValid = await Ed25519.verify(signatureBytes, messageBytes, publicKeyBytes);
+    
+    if (!isValid) {
+      sendWS(client.ws, { 
+        type: 'admin_auth_result', 
+        data: { success: false, message: '署名検証失敗' } 
+      });
+      return;
+    }
+
     const role = trustManager.getRole(publicKey);
+    
+    // 認証成功 - クライアントIDに公開鍵を紐付け
+    (client as any).authenticatedKey = publicKey;
+    (client as any).adminRole = role;
     
     sendWS(client.ws, { 
       type: 'admin_auth_result', 
@@ -573,7 +603,25 @@ async function handleAdminAuth(clientId: string, packet: Packet): Promise<void> 
   }
 }
 
+// 管理者認証チェックヘルパー
+function isAdminAuthenticated(clientId: string): boolean {
+  const client = clients.get(clientId);
+  if (!client) return false;
+  return !!(client as any).authenticatedKey;
+}
+
+function getAdminRole(clientId: string): Role | null {
+  const client = clients.get(clientId);
+  return client ? (client as any).adminRole || null : null;
+}
+
 function handleAdminStatus(clientId: string): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -587,7 +635,7 @@ function handleAdminStatus(clientId: string): void {
     nodeCount: fullNodes.size,
     clientCount: clients.size,
     chainHeight: bestNode?.info.chainHeight || 0,
-    difficulty: 1, // 実際の難易度は fullnode から取得する必要がある
+    difficulty: 1,
     latestBlock: null as any
   };
 
@@ -595,6 +643,12 @@ function handleAdminStatus(clientId: string): void {
 }
 
 function handleAdminNodes(clientId: string): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -607,6 +661,12 @@ function handleAdminNodes(clientId: string): void {
 }
 
 function handleAdminGetKeys(clientId: string): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -619,6 +679,12 @@ function handleAdminGetKeys(clientId: string): void {
 }
 
 function handleAdminGetAccount(clientId: string, packet: Packet): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -637,6 +703,12 @@ function handleAdminGetAccount(clientId: string, packet: Packet): void {
 }
 
 function handleAdminGetBlocks(clientId: string, packet: Packet): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -656,6 +728,12 @@ function handleAdminGetBlocks(clientId: string, packet: Packet): void {
 }
 
 function handleAdminMempool(clientId: string): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -667,6 +745,12 @@ function handleAdminMempool(clientId: string): void {
 }
 
 function handleAdminGetTransactions(clientId: string, packet: Packet): void {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
   const client = clients.get(clientId);
   if (!client) return;
 
@@ -683,6 +767,19 @@ function handleAdminGetTransactions(clientId: string, packet: Packet): void {
 }
 
 async function handleAdminRemoveKey(clientId: string, packet: Packet): Promise<void> {
+  if (!isAdminAuthenticated(clientId)) {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    return;
+  }
+  
+  // root権限チェック
+  if (getAdminRole(clientId) !== 'root') {
+    const client = clients.get(clientId);
+    if (client) sendWS(client.ws, { type: 'admin_remove_key_result', data: { success: false, message: 'root権限が必要です' } });
+    return;
+  }
+  
   const { publicKey, removedBy } = packet.data;
   const client = clients.get(clientId);
   if (!client) return;

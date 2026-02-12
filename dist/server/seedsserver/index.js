@@ -46,6 +46,16 @@ function log(category, message) {
     console.log(`[${time}][${category}] ${message}`);
 }
 // ============================================================
+// ヘルパー関数
+// ============================================================
+function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+}
+// ============================================================
 // seeds.json & シードノード間接続
 // ============================================================
 function loadSeeds() {
@@ -537,9 +547,23 @@ async function handleAdminAuth(clientId, packet) {
             });
             return;
         }
-        // チャレンジ署名を検証（簡易的にチャレンジ = タイムスタンプとして検証）
-        // 実際の実装では crypto.ts の Ed25519.verify を使用
+        // Ed25519署名を検証
+        const { Ed25519 } = await import('./crypto');
+        const messageBytes = new TextEncoder().encode(challenge);
+        const signatureBytes = hexToBytes(signature);
+        const publicKeyBytes = hexToBytes(publicKey);
+        const isValid = await Ed25519.verify(signatureBytes, messageBytes, publicKeyBytes);
+        if (!isValid) {
+            sendWS(client.ws, {
+                type: 'admin_auth_result',
+                data: { success: false, message: '署名検証失敗' }
+            });
+            return;
+        }
         const role = trustManager.getRole(publicKey);
+        // 認証成功 - クライアントIDに公開鍵を紐付け
+        client.authenticatedKey = publicKey;
+        client.adminRole = role;
         sendWS(client.ws, {
             type: 'admin_auth_result',
             data: { success: true, role }
@@ -553,7 +577,24 @@ async function handleAdminAuth(clientId, packet) {
         });
     }
 }
+// 管理者認証チェックヘルパー
+function isAdminAuthenticated(clientId) {
+    const client = clients.get(clientId);
+    if (!client)
+        return false;
+    return !!client.authenticatedKey;
+}
+function getAdminRole(clientId) {
+    const client = clients.get(clientId);
+    return client ? client.adminRole || null : null;
+}
 function handleAdminStatus(clientId) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -566,12 +607,18 @@ function handleAdminStatus(clientId) {
         nodeCount: fullNodes.size,
         clientCount: clients.size,
         chainHeight: bestNode?.info.chainHeight || 0,
-        difficulty: 1, // 実際の難易度は fullnode から取得する必要がある
+        difficulty: 1,
         latestBlock: null
     };
     sendWS(client.ws, { type: 'admin_status', data: status });
 }
 function handleAdminNodes(clientId) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -582,6 +629,12 @@ function handleAdminNodes(clientId) {
     });
 }
 function handleAdminGetKeys(clientId) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -592,6 +645,12 @@ function handleAdminGetKeys(clientId) {
     });
 }
 function handleAdminGetAccount(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -608,6 +667,12 @@ function handleAdminGetAccount(clientId, packet) {
     });
 }
 function handleAdminGetBlocks(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -625,6 +690,12 @@ function handleAdminGetBlocks(clientId, packet) {
     });
 }
 function handleAdminMempool(clientId) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -635,6 +706,12 @@ function handleAdminMempool(clientId) {
     });
 }
 function handleAdminGetTransactions(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
     const client = clients.get(clientId);
     if (!client)
         return;
@@ -649,6 +726,19 @@ function handleAdminGetTransactions(clientId, packet) {
     });
 }
 async function handleAdminRemoveKey(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    // root権限チェック
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_remove_key_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
     const { publicKey, removedBy } = packet.data;
     const client = clients.get(clientId);
     if (!client)
