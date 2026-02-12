@@ -5,7 +5,7 @@
 import { Ed25519 } from './crypto.js';
 const DELIMITER = '\nLINE_BREAK\n';
 const BTR_ADDRESS = '0x0000000000000000';
-const GAS_FEE = 0.5;
+const GAS_FEE = 1;
 const WS_URL = 'wss://shudo-physics.f5.si:443';
 // ============================================================
 // 状態
@@ -153,7 +153,7 @@ function handlePacket(packet) {
             if (newHeight > chainHeight)
                 chainHeight = newHeight;
             latestBlockHash = blk.hash || latestBlockHash;
-            if ((blk.difficulty || 0) > currentDifficulty) {
+            if (blk.difficulty) {
                 currentDifficulty = blk.difficulty;
             }
             $('chainHeight').textContent = String(chainHeight);
@@ -182,6 +182,9 @@ function handlePacket(packet) {
             }
             else {
                 addLog('globalLog', `Tx失敗: ${packet.data.error}`, 'error');
+                // 失敗時はnonceを戻す（楽観インクリメントの補正）
+                if (nonce > 0)
+                    nonce--;
             }
             if (wallet)
                 requestBalance();
@@ -357,12 +360,12 @@ function updateWalletUI() {
 }
 function updateBalanceUI() {
     $('btrBalance').textContent = balance.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const tokenKeys = Object.keys(tokenBalances);
+    const tokenKeys = Object.keys(tokenBalances).filter(addr => tokenBalances[addr] > 0);
     if (tokenKeys.length > 0) {
         $('tokenBalances').style.display = 'block';
         $('tokenList').innerHTML = tokenKeys.map(addr => {
-            const t = tokenBalances[addr];
-            return `<div class="token-item"><span>${t.symbol} <span style="color:var(--text2);font-size:11px">${t.name}</span></span><span>${t.balance.toLocaleString()}</span></div>`;
+            const bal = tokenBalances[addr];
+            return `<div class="token-item"><span style="color:var(--text2);font-size:11px">${addr}</span><span>${bal.toLocaleString()}</span></div>`;
         }).join('');
     }
     else {
@@ -394,7 +397,7 @@ async function signAndSend(txData) {
         const sigBytes = await Ed25519.sign(msgBytes, privBytes);
         tx.signature = bytesToHex(sigBytes);
         send({ type: 'tx', data: tx });
-        nonce++;
+        nonce++; // 楽観インクリメント
         addLog('globalLog', `Tx送信: ${tx.type}`, 'info');
     }
     catch (e) {
@@ -448,10 +451,9 @@ async function executeSwap() {
 // ============================================================
 const MINE_WORKER_CODE = `
 self.onmessage = function(e) {
-  const { previousHash, timestamp, miner, transactions, difficulty, startNonce } = e.data;
-  const targetMax = 0xFFFFFFFF;
-  const target = Math.floor(targetMax / difficulty);
+  const { previousHash, timestamp, miner, transactions, difficulty, reward, startNonce } = e.data;
   const txStr = JSON.stringify(transactions);
+  const prefix = '0'.repeat(difficulty);
   let nonce = startNonce;
   let hashCount = 0;
   function sha256sync(str) {
@@ -475,10 +477,9 @@ self.onmessage = function(e) {
     return[h0,h1,h2,h3,h4,h5,h6,h7].map(x=>x.toString(16).padStart(8,'0')).join('');
   }
   while(true){
-    const input=previousHash+timestamp+nonce+miner+txStr;
+    const input=previousHash+timestamp+nonce+difficulty+miner+reward+txStr;
     const hash=sha256sync(input);
-    const prefix=parseInt(hash.slice(0,8),16);
-    if(prefix<=target){self.postMessage({type:'found',nonce,hash,hashCount});return;}
+    if(hash.startsWith(prefix)){self.postMessage({type:'found',nonce,hash,hashCount});return;}
     nonce++;hashCount++;
     if(hashCount%5000===0)self.postMessage({type:'progress',hashCount,nonce});
   }
@@ -568,6 +569,7 @@ function startMineWorker() {
         miner: block.miner,
         transactions: block.transactions,
         difficulty: block.difficulty,
+        reward: block.reward,
         startNonce: 0,
     });
 }
@@ -644,7 +646,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
     <div class="card"><h2>BTR送金</h2>
       <label>宛先アドレス</label><input type="text" id="sendTo" placeholder="0x...">
       <label>金額 (BTR)</label><input type="number" id="sendAmount" placeholder="0" step="0.1" min="0">
-      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">ガス代: 0.5 BTR</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">ガス代: 1 BTR</div>
       <button class="btn" id="btnSendBTR">送金</button>
     </div>
     <div class="card"><h2>トークン送金</h2>
@@ -676,7 +678,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
       <label>AMMプール比率 (0〜1)</label><input type="number" id="tokenPoolRatio" placeholder="0.5" step="0.1" min="0" max="1">
       <label>配布方式</label>
       <select id="tokenDist"><option value="creator">全額作成者に渡る</option><option value="mining">マイニングで徐々に発行</option><option value="split">作成者とプールに分配</option><option value="airdrop">接続中のウォレットに均等配布</option></select>
-      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">作成費: 10,000 BTR + ガス代 0.5 BTR</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">作成費: 10,000 BTR + ガス代 1 BTR</div>
       <button class="btn" id="btnCreateToken">トークン作成</button>
     </div>
   </div>

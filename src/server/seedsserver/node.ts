@@ -27,7 +27,7 @@ const CONFIG = {
   BLOCK_TIME: 45,
   BLOCK_REWARD_MIN: 80,
   BLOCK_REWARD_MAX: 120,
-  GAS_FEE: 0.5,
+  GAS_FEE: 1,
   TOKEN_CREATION_FEE: 10_000,
   TOKEN_RENAME_FEE: 500,
   TIMESTAMP_TOLERANCE: 10 * 60 * 1000,  // ±10分
@@ -150,7 +150,9 @@ function computeBlockHash(block: Block): string {
     block.previousHash +
     block.timestamp +
     block.nonce +
+    block.difficulty +
     block.miner +
+    block.reward +
     JSON.stringify(block.transactions)
   );
 }
@@ -293,6 +295,27 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
       if (!tx.data?.tokenIn || !tx.data?.tokenOut || !tx.data?.amountIn || tx.data.amountIn <= 0) {
         return { valid: false, error: 'swap: データが不正' };
       }
+      if (tx.data.tokenIn === tx.data.tokenOut) {
+        return { valid: false, error: 'swap: 同一トークン間のスワップ不可' };
+      }
+      // 残高チェック
+      if (tx.data.tokenIn === BTR_ADDRESS) {
+        if (account.balance < tx.data.amountIn + tx.fee) {
+          return { valid: false, error: 'swap: BTR残高不足' };
+        }
+      } else {
+        const tokenBal: number = getTokenBalance(tx.from, tx.data.tokenIn);
+        if (tokenBal < tx.data.amountIn) {
+          return { valid: false, error: 'swap: トークン残高不足' };
+        }
+      }
+      // AMMプール存在チェック
+      if (tx.data.tokenIn !== BTR_ADDRESS && !ammPools.has(tx.data.tokenIn)) {
+        return { valid: false, error: 'swap: 入力トークンのプールが存在しない' };
+      }
+      if (tx.data.tokenOut !== BTR_ADDRESS && !ammPools.has(tx.data.tokenOut)) {
+        return { valid: false, error: 'swap: 出力トークンのプールが存在しない' };
+      }
       break;
     }
     case 'rename_token': {
@@ -349,7 +372,7 @@ function applyTransaction(tx: Transaction, minerAddress: string): void {
       sender.balance -= CONFIG.TOKEN_CREATION_FEE;
       miner.balance += CONFIG.TOKEN_CREATION_FEE;
 
-      const tokenAddress: string = '0x' + randomBytes(8).toString('hex');
+      const tokenAddress: string = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
       const poolRatio: number = tx.data!.poolRatio || 0;
       const totalSupply: number = tx.data!.totalSupply!;
 
@@ -430,6 +453,7 @@ function executeSwap(tx: Transaction): void {
     // BTR → Token
     const pool: AMMPool | undefined = ammPools.get(tokenOut);
     if (!pool) return;
+    if (sender.balance < amountIn) return;
     sender.balance -= amountIn;
     const amountOut: number = (amountIn * pool.tokenReserve) / (pool.btrReserve + amountIn);
     pool.btrReserve += amountIn;
@@ -471,9 +495,9 @@ function executeSwap(tx: Transaction): void {
 // ============================================================
 
 function verifyBlock(block: Block): { valid: boolean; error?: string } {
-  // 難易度チェック（ノード側の難易度を使う）
-  if (block.difficulty !== currentDifficulty) {
-    return { valid: false, error: `難易度不一致 (期待: ${currentDifficulty}, 受信: ${block.difficulty})` };
+  // 難易度は正の整数であること
+  if (block.difficulty < 1 || !Number.isInteger(block.difficulty)) {
+    return { valid: false, error: `難易度が不正: ${block.difficulty}` };
   }
 
   // ハッシュ検証
@@ -482,8 +506,8 @@ function verifyBlock(block: Block): { valid: boolean; error?: string } {
     return { valid: false, error: 'ブロックハッシュ不一致' };
   }
 
-  // PoW検証（ノード側の難易度で）
-  if (!block.hash.startsWith('0'.repeat(currentDifficulty))) {
+  // PoW検証（ブロック自身の難易度で）
+  if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
     return { valid: false, error: 'PoW条件を満たしていない' };
   }
 
@@ -562,13 +586,14 @@ function adjustDifficulty(): void {
   const recent: Block[] = chain.slice(-CONFIG.DIFFICULTY_WINDOW);
   const totalTime: number = recent[recent.length - 1].timestamp - recent[0].timestamp;
   const avgTime: number = totalTime / (recent.length - 1);
+  const targetMs: number = CONFIG.BLOCK_TIME * 1000;
 
-  if (avgTime < 40000) {
+  if (avgTime < targetMs * 0.85) {
     currentDifficulty++;
-    log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
-  } else if (avgTime > 50000 && currentDifficulty > 1) {
+    log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
+  } else if (avgTime > targetMs * 1.15 && currentDifficulty > 1) {
     currentDifficulty--;
-    log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
+    log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
   }
 }
 

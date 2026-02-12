@@ -1,12 +1,13 @@
 {
   "name": "btr-seed-node",
   "version": "1.0.0",
+  "type": "module",
   "description": "BTR (Buturi Coin) Seed Node",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server/seedsserver/index.js",
-    "dev": "ts-node src//server/seedsserver/index.ts"
+    "dev": "ts-node src/server/seedsserver/index.ts"
   },
   "dependencies": {
     "ws": "^8.16.0"

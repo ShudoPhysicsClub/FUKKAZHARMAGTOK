@@ -3,9 +3,9 @@
 // crypto.ts の Ed25519 を使用
 // ============================================================
 
-import { TrustedKey, TrustedKeysFile, Role, UpdatePackage } from './types';
-import { canonicalJSON } from './protocol';
-import { Ed25519 } from './crypto';
+import { TrustedKey, TrustedKeysFile, Role, UpdatePackage } from './types.js';
+import { canonicalJSON } from './protocol.js';
+import { Ed25519 } from './crypto.js';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';

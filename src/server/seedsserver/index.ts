@@ -35,7 +35,8 @@ const CONFIG = {
   RANDOM_TIMEOUT: 10000,
   SSL_CERT: '/etc/letsencrypt/live/shudo-physics.f5.si/fullchain.pem',
   SSL_KEY: '/etc/letsencrypt/live/shudo-physics.f5.si/privkey.pem',
-  SEEDS_PATH: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json',
+  SEEDS_PATH: './seeds.json',
+  SEEDS_CDN: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json',
 };
 
 // ============================================================
@@ -714,7 +715,6 @@ function handleAdminGetBlocks(clientId: string, packet: Packet): void {
     type: 'get_chain', 
     data: { 
       from: -limit,
-      to: 0,
       clientId,
       admin: true
     } 

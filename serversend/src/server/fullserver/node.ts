@@ -6,7 +6,7 @@
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { Ed25519 } from './crypto';
+import { Ed25519 } from '../fullserver/crypto.js';
 
 const DELIMITER: string = '\nLINE_BREAK\n';
 const BTR_ADDRESS: string = '0x0000000000000000';
@@ -27,7 +27,7 @@ const CONFIG = {
   BLOCK_TIME: 45,
   BLOCK_REWARD_MIN: 80,
   BLOCK_REWARD_MAX: 120,
-  GAS_FEE: 0.5,
+  GAS_FEE: 1,
   TOKEN_CREATION_FEE: 10_000,
   TOKEN_RENAME_FEE: 500,
   TIMESTAMP_TOLERANCE: 10 * 60 * 1000,  // ±10分
@@ -150,7 +150,9 @@ function computeBlockHash(block: Block): string {
     block.previousHash +
     block.timestamp +
     block.nonce +
+    block.difficulty +
     block.miner +
+    block.reward +
     JSON.stringify(block.transactions)
   );
 }
@@ -293,6 +295,27 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
       if (!tx.data?.tokenIn || !tx.data?.tokenOut || !tx.data?.amountIn || tx.data.amountIn <= 0) {
         return { valid: false, error: 'swap: データが不正' };
       }
+      if (tx.data.tokenIn === tx.data.tokenOut) {
+        return { valid: false, error: 'swap: 同一トークン間のスワップ不可' };
+      }
+      // 残高チェック
+      if (tx.data.tokenIn === BTR_ADDRESS) {
+        if (account.balance < tx.data.amountIn + tx.fee) {
+          return { valid: false, error: 'swap: BTR残高不足' };
+        }
+      } else {
+        const tokenBal: number = getTokenBalance(tx.from, tx.data.tokenIn);
+        if (tokenBal < tx.data.amountIn) {
+          return { valid: false, error: 'swap: トークン残高不足' };
+        }
+      }
+      // AMMプール存在チェック
+      if (tx.data.tokenIn !== BTR_ADDRESS && !ammPools.has(tx.data.tokenIn)) {
+        return { valid: false, error: 'swap: 入力トークンのプールが存在しない' };
+      }
+      if (tx.data.tokenOut !== BTR_ADDRESS && !ammPools.has(tx.data.tokenOut)) {
+        return { valid: false, error: 'swap: 出力トークンのプールが存在しない' };
+      }
       break;
     }
     case 'rename_token': {
@@ -349,7 +372,7 @@ function applyTransaction(tx: Transaction, minerAddress: string): void {
       sender.balance -= CONFIG.TOKEN_CREATION_FEE;
       miner.balance += CONFIG.TOKEN_CREATION_FEE;
 
-      const tokenAddress: string = '0x' + randomBytes(8).toString('hex');
+      const tokenAddress: string = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
       const poolRatio: number = tx.data!.poolRatio || 0;
       const totalSupply: number = tx.data!.totalSupply!;
 
@@ -430,6 +453,7 @@ function executeSwap(tx: Transaction): void {
     // BTR → Token
     const pool: AMMPool | undefined = ammPools.get(tokenOut);
     if (!pool) return;
+    if (sender.balance < amountIn) return;
     sender.balance -= amountIn;
     const amountOut: number = (amountIn * pool.tokenReserve) / (pool.btrReserve + amountIn);
     pool.btrReserve += amountIn;
@@ -471,13 +495,18 @@ function executeSwap(tx: Transaction): void {
 // ============================================================
 
 function verifyBlock(block: Block): { valid: boolean; error?: string } {
+  // 難易度は正の整数であること
+  if (block.difficulty < 1 || !Number.isInteger(block.difficulty)) {
+    return { valid: false, error: `難易度が不正: ${block.difficulty}` };
+  }
+
   // ハッシュ検証
   const expectedHash: string = computeBlockHash(block);
   if (block.hash !== expectedHash) {
     return { valid: false, error: 'ブロックハッシュ不一致' };
   }
 
-  // PoW検証
+  // PoW検証（ブロック自身の難易度で）
   if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
     return { valid: false, error: 'PoW条件を満たしていない' };
   }
@@ -557,13 +586,14 @@ function adjustDifficulty(): void {
   const recent: Block[] = chain.slice(-CONFIG.DIFFICULTY_WINDOW);
   const totalTime: number = recent[recent.length - 1].timestamp - recent[0].timestamp;
   const avgTime: number = totalTime / (recent.length - 1);
+  const targetMs: number = CONFIG.BLOCK_TIME * 1000;
 
-  if (avgTime < 40000) {
+  if (avgTime < targetMs * 0.85) {
     currentDifficulty++;
-    log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
-  } else if (avgTime > 50000 && currentDifficulty > 1) {
+    log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
+  } else if (avgTime > targetMs * 1.15 && currentDifficulty > 1) {
     currentDifficulty--;
-    log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
+    log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
   }
 }
 
@@ -734,22 +764,46 @@ async function handlePacket(packet: Packet): Promise<void> {
 
     // --- ブロック受信 ---
     case 'block_broadcast': {
-      const block: Block = packet.data;
+      const { minerId: _mid, ...blockOnly } = packet.data;
+      const block: Block = blockOnly;
       const result = verifyBlock(block);
       if (result.valid) {
         applyBlock(block);
         log('Block', `ブロック適用: #${block.height} by ${block.miner.slice(0, 10)}... (${block.transactions.length}tx)`);
         saveState();
+        // クライアントに結果を返す（難易度・最新ハッシュ含む）
+        sendToSeed({
+          type: 'block_accepted',
+          data: {
+            height: chain.length,
+            hash: block.hash,
+            difficulty: currentDifficulty,
+            reward: calculateReward(chain.length),
+            minerId: packet.data?.minerId,
+          }
+        });
       } else {
         log('Block', `ブロック拒否: ${result.error}`);
+        sendToSeed({
+          type: 'block_rejected',
+          data: {
+            error: result.error,
+            difficulty: currentDifficulty,
+            height: chain.length,
+            hash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
+            minerId: packet.data?.minerId,
+          }
+        });
       }
       break;
     }
 
     // --- トランザクション受信 ---
     case 'tx': {
-      const tx: Transaction = packet.data;
       const clientId: string | undefined = packet.data?.clientId;
+      // clientIdを除去してトランザクションだけにする
+      const { clientId: _cid, ...txOnly } = packet.data;
+      const tx: Transaction = txOnly;
       const result = await verifyTransaction(tx);
 
       if (result.valid) {
@@ -790,31 +844,77 @@ async function handlePacket(packet: Packet): Promise<void> {
       const clientId: string = packet.data?.clientId;
       const address: string = packet.data?.address;
       const account: Account = getAccount(address);
-      sendToSeed({
-        type: 'balance',
-        data: { clientId, address, balance: account.balance, tokens: account.tokens }
-      });
+      const adminRequest: boolean = packet.data?.adminRequest || false;
+      
+      if (adminRequest) {
+        sendToSeed({
+          type: 'admin_account',
+          data: { clientId, found: true, account: { address: account.address, balance: account.balance, nonce: account.nonce, tokens: account.tokens } }
+        });
+      } else {
+        sendToSeed({
+          type: 'balance',
+          data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
+        });
+      }
       break;
     }
 
     case 'get_height': {
       const clientId: string = packet.data?.clientId;
+      const latestHash: string = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
       sendToSeed({
         type: 'height',
-        data: { clientId, height: chain.length }
+        data: { clientId, height: chain.length, difficulty: currentDifficulty, latestHash }
+      });
+      break;
+    }
+
+    case 'get_block_template': {
+      const clientId: string = packet.data?.clientId;
+      const miner: string = packet.data?.miner || '';
+      const latestHash: string = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
+      const reward: number = calculateReward(chain.length);
+      sendToSeed({
+        type: 'block_template',
+        data: {
+          clientId,
+          height: chain.length,
+          previousHash: latestHash,
+          difficulty: currentDifficulty,
+          reward,
+          transactions: pendingTxs,
+          miner,
+        }
       });
       break;
     }
 
     case 'get_chain': {
       const clientId: string = packet.data?.clientId;
-      const from: number = packet.data?.from || 0;
-      const to: number = packet.data?.to || chain.length;
+      let from: number = packet.data?.from || 0;
+      let to: number = packet.data?.to || chain.length;
+      const isAdmin: boolean = packet.data?.admin || false;
+      
+      // 負の値の場合は最新から取得
+      if (from < 0) {
+        from = Math.max(0, chain.length + from);
+        to = chain.length;
+      }
+      
       const chunk: Block[] = chain.slice(from, to);
-      sendToSeed({
-        type: 'chain_chunk',
-        data: { clientId, from, to, blocks: chunk }
-      });
+      
+      if (isAdmin) {
+        sendToSeed({
+          type: 'admin_blocks',
+          data: { clientId, blocks: chunk }
+        });
+      } else {
+        sendToSeed({
+          type: 'chain_chunk',
+          data: { clientId, from, to, blocks: chunk }
+        });
+      }
       break;
     }
 
@@ -841,43 +941,36 @@ async function handlePacket(packet: Packet): Promise<void> {
       break;
     }
 
-    // --- 分散乱数 ---
-    case 'random_request': {
-      // 乱数生成 & コミット
-      const myRandom: string = randomBytes(32).toString('hex');
-      const commit: string = sha256(myRandom);
-      // 一時保存（revealで使う）
-      (global as any).__btrRandomValue = myRandom;
-      sendToSeed({ type: 'random_commit', data: { hash: commit } });
+    // --- 管理者パネル用 ---
+    case 'get_mempool': {
+      const clientId: string = packet.data?.clientId;
+      sendToSeed({
+        type: 'admin_mempool',
+        data: { 
+          clientId, 
+          count: pendingTxs.length,
+          transactions: pendingTxs.slice(0, 50)  // 最初の50件
+        }
+      });
       break;
     }
 
-    case 'random_reveal_request': {
-      const myRandom: string = (global as any).__btrRandomValue || '';
-      sendToSeed({ type: 'random_reveal', data: { value: myRandom } });
-      break;
-    }
-
-    case 'random_result': {
-      commonRandom = packet.data?.random || '';
-      log('Random', `共通乱数受信: ${commonRandom.slice(0, 16)}...`);
-      break;
-    }
-
-    // --- アップデート ---
-    case 'update': {
-      log('Update', `アップデート受信: v${packet.data?.version}`);
-      // ランチャーに転送
-      if (process.send) {
-        process.send({ type: 'update', data: packet.data });
+    case 'get_recent_transactions': {
+      const clientId: string = packet.data?.clientId;
+      const limit: number = packet.data?.limit || 50;
+      // 最新のブロックからトランザクションを収集
+      const recentTxs: Transaction[] = [];
+      for (let i = chain.length - 1; i >= 0 && recentTxs.length < limit; i--) {
+        const block: Block = chain[i];
+        for (const tx of block.transactions) {
+          if (recentTxs.length >= limit) break;
+          recentTxs.push(tx);
+        }
       }
-      break;
-    }
-
-    // --- trusted_keys同期 ---
-    case 'sync_trusted_keys': {
-      writeFileSync('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
-      log('Trust', 'trusted_keys.json 同期');
+      sendToSeed({
+        type: 'admin_transactions',
+        data: { clientId, transactions: recentTxs }
+      });
       break;
     }
 
@@ -988,6 +1081,46 @@ async function handlePacket(packet: Packet): Promise<void> {
         type: 'admin_remove_tx_result',
         data: { clientId, success, signature }
       });
+      break;
+    }
+
+    // --- 分散乱数 ---
+    case 'random_request': {
+      // 乱数生成 & コミット
+      const myRandom: string = randomBytes(32).toString('hex');
+      const commit: string = sha256(myRandom);
+      // 一時保存（revealで使う）
+      (global as any).__btrRandomValue = myRandom;
+      sendToSeed({ type: 'random_commit', data: { hash: commit } });
+      break;
+    }
+
+    case 'random_reveal_request': {
+      const myRandom: string = (global as any).__btrRandomValue || '';
+      sendToSeed({ type: 'random_reveal', data: { value: myRandom } });
+      break;
+    }
+
+    case 'random_result': {
+      commonRandom = packet.data?.random || '';
+      log('Random', `共通乱数受信: ${commonRandom.slice(0, 16)}...`);
+      break;
+    }
+
+    // --- アップデート ---
+    case 'update': {
+      log('Update', `アップデート受信: v${packet.data?.version}`);
+      // ランチャーに転送
+      if (process.send) {
+        process.send({ type: 'update', data: packet.data });
+      }
+      break;
+    }
+
+    // --- trusted_keys同期 ---
+    case 'sync_trusted_keys': {
+      writeFileSync('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
+      log('Trust', 'trusted_keys.json 同期');
       break;
     }
 

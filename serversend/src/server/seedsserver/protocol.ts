@@ -2,7 +2,7 @@
 // BTR - パケット送受信プロトコル
 // ============================================================
 
-import { DELIMITER, Packet } from './types';
+import { DELIMITER, Packet } from './types.js';
 import net from 'net';
 import { WebSocket } from 'ws';
 
