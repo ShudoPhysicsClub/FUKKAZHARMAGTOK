@@ -929,6 +929,78 @@ async function handlePacket(packet: Packet): Promise<void> {
       break;
     }
 
+    // --- 管理者コマンド (root only) ---
+    case 'admin_mint': {
+      const { address, amount, clientId } = packet.data;
+      log('Admin', `コイン発行実行: ${address} に ${amount} BTR`);
+      
+      const account = getAccount(address);
+      account.balance += amount;
+      saveState();
+      
+      sendToSeed({
+        type: 'admin_mint_result',
+        data: { clientId, success: true, address, amount, newBalance: account.balance }
+      });
+      break;
+    }
+
+    case 'admin_distribute': {
+      const { distributions, clientId } = packet.data;
+      log('Admin', `一括配給実行: ${distributions.length} 件`);
+      
+      const results = [];
+      for (const dist of distributions) {
+        const { address, amount } = dist;
+        const account = getAccount(address);
+        account.balance += amount;
+        results.push({ address, amount, newBalance: account.balance });
+      }
+      saveState();
+      
+      sendToSeed({
+        type: 'admin_distribute_result',
+        data: { clientId, success: true, count: results.length, results }
+      });
+      break;
+    }
+
+    case 'admin_clear_mempool': {
+      const { clientId } = packet.data;
+      const count = pendingTxs.length;
+      log('Admin', `Mempool全消去: ${count} 件のトランザクションを削除`);
+      
+      pendingTxs.length = 0;
+      
+      sendToSeed({
+        type: 'admin_clear_mempool_result',
+        data: { clientId, success: true, count }
+      });
+      break;
+    }
+
+    case 'admin_remove_tx': {
+      const { signature, clientId } = packet.data;
+      log('Admin', `トランザクション削除: ${signature.slice(0, 16)}...`);
+      
+      const index = pendingTxs.findIndex(tx => tx.signature === signature);
+      let success = false;
+      
+      if (index !== -1) {
+        pendingTxs.splice(index, 1);
+        success = true;
+        log('Admin', `トランザクション削除成功`);
+      } else {
+        log('Admin', `トランザクションが見つかりません`);
+      }
+      
+      sendToSeed({
+        type: 'admin_remove_tx_result',
+        data: { clientId, success, signature }
+      });
+      break;
+    }
+
     // --- 分散乱数 ---
     case 'random_request': {
       // 乱数生成 & コミット
