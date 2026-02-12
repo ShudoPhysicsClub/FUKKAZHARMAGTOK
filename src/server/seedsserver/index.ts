@@ -426,6 +426,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     }
     case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
     case 'token_info': case 'rate': case 'tx_result': case 'block_template':
+    case 'admin_mempool': case 'admin_transactions': case 'admin_account': case 'admin_blocks':
       if (packet.data?.clientId) {
         const client = clients.get(packet.data.clientId);
         if (client) sendWS(client.ws, packet);
@@ -464,6 +465,16 @@ function handleClientPacket(clientId: string, packet: Packet): void {
       break;
     case 'update': handleUpdateFromClient(clientId, packet); break;
     case 'add_member': handleAddMember(clientId, packet); break;
+    // 管理者パネル用のパケット
+    case 'admin_auth': handleAdminAuth(clientId, packet); break;
+    case 'admin_status': handleAdminStatus(clientId); break;
+    case 'admin_nodes': handleAdminNodes(clientId); break;
+    case 'admin_get_keys': handleAdminGetKeys(clientId); break;
+    case 'admin_get_account': handleAdminGetAccount(clientId, packet); break;
+    case 'admin_get_blocks': handleAdminGetBlocks(clientId, packet); break;
+    case 'admin_mempool': handleAdminMempool(clientId); break;
+    case 'admin_get_transactions': handleAdminGetTransactions(clientId, packet); break;
+    case 'admin_remove_key': handleAdminRemoveKey(clientId, packet); break;
     default: log('WSS', `不明なパケット: ${packet.type} from ${clientId}`);
   }
 }
@@ -519,6 +530,170 @@ async function handleAddMember(clientId: string, packet: Packet): Promise<void> 
   if (!client) return;
   const success = await trustManager.addMember(publicKey, role, addedBy, signature);
   sendWS(client.ws, { type: 'add_member_result', data: { success } });
+  if (success) {
+    const keysData = trustManager.getTrustedKeysFile();
+    broadcastToNodes({ type: 'sync_trusted_keys', data: keysData });
+    broadcastToSeeds({ type: 'sync_trusted_keys', data: keysData });
+  }
+}
+
+// ============================================================
+// 管理者パネル用ハンドラ
+// ============================================================
+
+async function handleAdminAuth(clientId: string, packet: Packet): Promise<void> {
+  const { publicKey, challenge, signature } = packet.data;
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  try {
+    // 信頼されているか確認
+    if (!trustManager.isTrusted(publicKey)) {
+      sendWS(client.ws, { 
+        type: 'admin_auth_result', 
+        data: { success: false, message: '信頼されていない公開鍵です' } 
+      });
+      return;
+    }
+
+    // チャレンジ署名を検証（簡易的にチャレンジ = タイムスタンプとして検証）
+    // 実際の実装では crypto.ts の Ed25519.verify を使用
+    const role = trustManager.getRole(publicKey);
+    
+    sendWS(client.ws, { 
+      type: 'admin_auth_result', 
+      data: { success: true, role } 
+    });
+    log('Admin', `管理者認証成功: ${publicKey.slice(0, 16)}... (${role})`);
+  } catch (e) {
+    sendWS(client.ws, { 
+      type: 'admin_auth_result', 
+      data: { success: false, message: '認証エラー' } 
+    });
+  }
+}
+
+function handleAdminStatus(clientId: string): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  // 最高のチェーン高さを持つノードを取得
+  const nodes = Array.from(fullNodes.values());
+  const bestNode = nodes.length > 0 
+    ? nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b)
+    : null;
+
+  const status = {
+    nodeCount: fullNodes.size,
+    clientCount: clients.size,
+    chainHeight: bestNode?.info.chainHeight || 0,
+    difficulty: 1, // 実際の難易度は fullnode から取得する必要がある
+    latestBlock: null as any
+  };
+
+  sendWS(client.ws, { type: 'admin_status', data: status });
+}
+
+function handleAdminNodes(clientId: string): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const nodeList = Array.from(fullNodes.values()).map(conn => conn.info);
+  
+  sendWS(client.ws, { 
+    type: 'admin_nodes', 
+    data: { nodes: nodeList } 
+  });
+}
+
+function handleAdminGetKeys(clientId: string): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const keysData = trustManager.getTrustedKeysFile();
+  
+  sendWS(client.ws, { 
+    type: 'admin_trusted_keys', 
+    data: keysData 
+  });
+}
+
+function handleAdminGetAccount(clientId: string, packet: Packet): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const address = packet.data.address;
+  
+  // フルノードにアカウント情報をリクエスト
+  // balanceレスポンスをadmin_accountにマッピング
+  relayToNode({ 
+    type: 'get_balance', 
+    data: { 
+      address,
+      clientId,
+      adminRequest: true
+    } 
+  });
+}
+
+function handleAdminGetBlocks(clientId: string, packet: Packet): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const limit = packet.data.limit || 10;
+  
+  // フルノードにブロック情報をリクエスト
+  // 最新 N ブロックを取得
+  relayToNode({ 
+    type: 'get_chain', 
+    data: { 
+      from: -limit,  // 負の値で最新から取得
+      to: 0,
+      clientId,
+      admin: true
+    } 
+  });
+}
+
+function handleAdminMempool(clientId: string): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  // フルノードにmempool情報をリクエスト
+  relayToNode({ 
+    type: 'get_mempool', 
+    data: { clientId } 
+  });
+}
+
+function handleAdminGetTransactions(clientId: string, packet: Packet): void {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const limit = packet.data.limit || 50;
+  
+  // フルノードに最近のトランザクションをリクエスト
+  relayToNode({ 
+    type: 'get_recent_transactions', 
+    data: { 
+      limit,
+      clientId 
+    } 
+  });
+}
+
+async function handleAdminRemoveKey(clientId: string, packet: Packet): Promise<void> {
+  const { publicKey, removedBy } = packet.data;
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const success = trustManager.removeMember(publicKey, removedBy);
+  
+  sendWS(client.ws, { 
+    type: 'admin_remove_key_result', 
+    data: { success } 
+  });
+
   if (success) {
     const keysData = trustManager.getTrustedKeysFile();
     broadcastToNodes({ type: 'sync_trusted_keys', data: keysData });

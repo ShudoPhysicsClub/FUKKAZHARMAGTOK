@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTR (Buturi Coin) 管理者パネル</title>
+    <link rel="icon" href="./img/rsa_icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Noto+Sans+JP:wght@100..900&family=Roboto:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', 'Noto Sans JP', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        h1 {
+            font-size: 2rem;
+            color: #4CAF50;
+            margin-bottom: 10px;
+        }
+        
+        .auth-section {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #f44336;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.connected {
+            background: #4CAF50;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card h2 {
+            color: #4CAF50;
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+            border-bottom: 2px solid rgba(76, 175, 80, 0.3);
+            padding-bottom: 10px;
+        }
+        
+        .stat {
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .stat-label {
+            color: #aaa;
+        }
+        
+        .stat-value {
+            color: #fff;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        
+        input, select, button {
+            width: 100%;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 14px;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        
+        button {
+            cursor: pointer;
+            background: #4CAF50;
+            border: none;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        button.danger {
+            background: #f44336;
+        }
+        
+        button.danger:hover {
+            background: #da190b;
+        }
+        
+        .log-box {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        
+        .log-box div {
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .log-box .info { color: #2196F3; }
+        .log-box .success { color: #4CAF50; }
+        .log-box .error { color: #f44336; }
+        .log-box .warning { color: #FF9800; }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        th {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        
+        tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .tab-button {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .tab-button.active {
+            background: #4CAF50;
+            border-color: #4CAF50;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .input-group {
+            margin: 15px 0;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+        
+        .small-text {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        
+        .address {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔐 BTR 管理者パネル</h1>
+            <div class="stat">
+                <span><span class="status-indicator" id="statusDot"></span><span id="statusText">未接続</span></span>
+                <span id="authStatus" class="small-text">未認証</span>
+            </div>
+        </header>
+        
+        <!-- 認証セクション -->
+        <div class="auth-section" id="authSection">
+            <h2>認証</h2>
+            <div class="input-group">
+                <label>秘密鍵 (64文字 hex)</label>
+                <input type="text" id="privateKey" placeholder="秘密鍵を入力...">
+            </div>
+            <div class="input-group">
+                <label>公開鍵 (自動生成)</label>
+                <input type="text" id="publicKey" readonly placeholder="秘密鍵から自動生成されます">
+            </div>
+            <button onclick="authenticate()">認証</button>
+            <button onclick="generateAdminKey()">新しい管理者鍵を生成</button>
+            <div class="log-box" id="authLog"></div>
+        </div>
+        
+        <!-- タブナビゲーション -->
+        <div class="tabs" id="mainTabs" style="display: none;">
+            <div class="tab-button active" onclick="switchTab('dashboard')">ダッシュボード</div>
+            <div class="tab-button" onclick="switchTab('nodes')">ノード管理</div>
+            <div class="tab-button" onclick="switchTab('keys')">信頼済み鍵</div>
+            <div class="tab-button" onclick="switchTab('transactions')">トランザクション</div>
+            <div class="tab-button" onclick="switchTab('accounts')">アカウント検索</div>
+            <div class="tab-button" onclick="switchTab('blocks')">ブロック履歴</div>
+        </div>
+        
+        <!-- ダッシュボード -->
+        <div id="tab-dashboard" class="tab-content active">
+            <div class="grid">
+                <div class="card">
+                    <h2>ネットワーク概要</h2>
+                    <div class="stat">
+                        <span class="stat-label">接続ノード数</span>
+                        <span class="stat-value" id="nodeCount">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">接続クライアント数</span>
+                        <span class="stat-value" id="clientCount">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">チェーン高さ</span>
+                        <span class="stat-value" id="chainHeight">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">現在の難易度</span>
+                        <span class="stat-value" id="difficulty">1</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>最新ブロック</h2>
+                    <div class="stat">
+                        <span class="stat-label">ブロック高</span>
+                        <span class="stat-value" id="latestBlockHeight">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">マイナー</span>
+                        <span class="stat-value address small-text" id="latestBlockMiner">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">トランザクション数</span>
+                        <span class="stat-value" id="latestBlockTxCount">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">タイムスタンプ</span>
+                        <span class="stat-value small-text" id="latestBlockTime">-</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>Mempool</h2>
+                    <div class="stat">
+                        <span class="stat-label">保留中Tx数</span>
+                        <span class="stat-value" id="mempoolCount">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Mempool更新</span>
+                        <button onclick="refreshMempool()">更新</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>システムログ</h2>
+                <div class="log-box" id="systemLog" style="max-height: 200px;"></div>
+            </div>
+        </div>
+        
+        <!-- ノード管理 -->
+        <div id="tab-nodes" class="tab-content">
+            <div class="card">
+                <h2>接続中のフルノード</h2>
+                <button onclick="refreshNodes()">更新</button>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ノードID</th>
+                            <th>接続時刻</th>
+                            <th>チェーン高さ</th>
+                            <th>最終Ping</th>
+                        </tr>
+                    </thead>
+                    <tbody id="nodesTableBody">
+                        <tr><td colspan="4" style="text-align: center; color: #888;">ノードなし</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- 信頼済み鍵管理 -->
+        <div id="tab-keys" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h2>鍵の追加</h2>
+                    <div class="input-group">
+                        <label>新しい公開鍵 (64文字 hex)</label>
+                        <input type="text" id="newPublicKey" placeholder="公開鍵...">
+                    </div>
+                    <div class="input-group">
+                        <label>ロール</label>
+                        <select id="newKeyRole">
+                            <option value="member">member (閲覧のみ)</option>
+                            <option value="root">root (全権限)</option>
+                        </select>
+                    </div>
+                    <button onclick="addTrustedKey()">鍵を追加</button>
+                    <div class="log-box" id="keyLog"></div>
+                </div>
+                
+                <div class="card">
+                    <h2>信頼済み鍵一覧</h2>
+                    <button onclick="refreshTrustedKeys()">更新</button>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>公開鍵</th>
+                                <th>ロール</th>
+                                <th>追加者</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trustedKeysTableBody">
+                            <tr><td colspan="4" style="text-align: center; color: #888;">読み込み中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- トランザクション監視 -->
+        <div id="tab-transactions" class="tab-content">
+            <div class="card">
+                <h2>最近のトランザクション</h2>
+                <button onclick="refreshTransactions()">更新</button>
+                <div class="log-box" id="transactionsList" style="max-height: 400px;"></div>
+            </div>
+        </div>
+        
+        <!-- アカウント検索 -->
+        <div id="tab-accounts" class="tab-content">
+            <div class="card">
+                <h2>アカウント情報検索</h2>
+                <div class="input-group">
+                    <label>アドレス (0x...)</label>
+                    <input type="text" id="searchAddress" placeholder="0x1234567890...">
+                </div>
+                <button onclick="searchAccount()">検索</button>
+                
+                <div id="accountResult" style="margin-top: 20px; display: none;">
+                    <h3 style="color: #4CAF50; margin-bottom: 10px;">検索結果</h3>
+                    <div class="stat">
+                        <span class="stat-label">アドレス</span>
+                        <span class="stat-value address small-text" id="accountAddress">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">BTR残高</span>
+                        <span class="stat-value" id="accountBalance">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Nonce</span>
+                        <span class="stat-value" id="accountNonce">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">トークン残高</span>
+                        <div id="accountTokens" class="small-text" style="color: #fff;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ブロック履歴 -->
+        <div id="tab-blocks" class="tab-content">
+            <div class="card">
+                <h2>最近のブロック</h2>
+                <div class="input-group">
+                    <label>取得するブロック数</label>
+                    <input type="number" id="blockCount" value="10" min="1" max="100">
+                </div>
+                <button onclick="refreshBlocks()">更新</button>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>高さ</th>
+                            <th>ハッシュ</th>
+                            <th>マイナー</th>
+                            <th>Tx数</th>
+                            <th>タイムスタンプ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="blocksTableBody">
+                        <tr><td colspan="5" style="text-align: center; color: #888;">ブロックなし</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="./dist/admin/admin.js"></script>
+</body>
+</html>
