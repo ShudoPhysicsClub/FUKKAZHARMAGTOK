@@ -1,7 +1,7 @@
 // ============================================================
 // BTR - パケット送受信プロトコル
 // ============================================================
-import { DELIMITER } from './types';
+import { DELIMITER } from './types.js';
 import { WebSocket } from 'ws';
 /**
  * Canonical JSON: キーをアルファベット順にソートして決定論的なJSON文字列を生成

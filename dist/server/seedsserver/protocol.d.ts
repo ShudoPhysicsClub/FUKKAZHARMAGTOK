@@ -1,4 +1,4 @@
-import { Packet } from './types';
+import { Packet } from './types.js';
 import net from 'net';
 import { WebSocket } from 'ws';
 /**

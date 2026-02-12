@@ -1,4 +1,4 @@
-import { NodeInfo } from './types';
+import { NodeInfo } from './types.js';
 export declare class RandomManager {
     private currentRandom;
     private commits;

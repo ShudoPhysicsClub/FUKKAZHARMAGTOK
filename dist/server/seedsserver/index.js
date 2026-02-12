@@ -7,14 +7,15 @@ import { createServer as createHTTPSServer } from 'https';
 import { createServer as createHTTPServer } from 'http';
 import fs from 'fs';
 import path from 'path';
-import { PacketBuffer, sendTCP, sendWS } from './protocol';
-import { TrustManager } from './trust';
-import { RandomManager } from './random';
+import { createHash } from 'crypto';
+import { PacketBuffer, sendTCP, sendWS } from './protocol.js';
+import { TrustManager } from './trust.js';
+import { RandomManager } from './random.js';
 // ============================================================
 // 設定
 // ============================================================
 const CONFIG = {
-    ROOT_PUBLIC_KEY: 'YOUR_ROOT_ED25519_PUBLIC_KEY_HERE',
+    ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
     TCP_PORT: 5000,
     WSS_PORT: 443,
     WSS_DEV_PORT: 8443,
@@ -25,7 +26,7 @@ const CONFIG = {
     RANDOM_TIMEOUT: 10000,
     SSL_CERT: '/etc/letsencrypt/live/shudo-physics.f5.si/fullchain.pem',
     SSL_KEY: '/etc/letsencrypt/live/shudo-physics.f5.si/privkey.pem',
-    SEEDS_PATH: './seeds.json',
+    SEEDS_PATH: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json',
 };
 const fullNodes = new Map();
 const clients = new Map();
@@ -345,7 +346,6 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'height':
             conn.info.chainHeight = packet.data?.height || 0;
-            // clientId付きならクライアントへの返答
             if (packet.data?.clientId) {
                 const client = clients.get(packet.data.clientId);
                 if (client)
@@ -360,9 +360,7 @@ function handleNodePacket(nodeId, packet) {
             broadcastToNodes(packet, nodeId);
             break;
         case 'block_accepted': {
-            // 全クライアントに new_block として配信
             broadcastToClients({ type: 'new_block', data: packet.data });
-            // 特定のマイナーにも個別に返す
             if (packet.data?.minerId) {
                 const client = clients.get(packet.data.minerId);
                 if (client)
@@ -371,7 +369,6 @@ function handleNodePacket(nodeId, packet) {
             break;
         }
         case 'block_rejected': {
-            // マイナーに拒否理由と正しい難易度を返す
             if (packet.data?.minerId) {
                 const client = clients.get(packet.data.minerId);
                 if (client)
@@ -441,7 +438,6 @@ function handleClientPacket(clientId, packet) {
         case 'add_member':
             handleAddMember(clientId, packet);
             break;
-        // 管理者パネル用のパケット
         case 'admin_auth':
             handleAdminAuth(clientId, packet);
             break;
@@ -539,7 +535,6 @@ async function handleAdminAuth(clientId, packet) {
     if (!client)
         return;
     try {
-        // 信頼されているか確認
         if (!trustManager.isTrusted(publicKey)) {
             sendWS(client.ws, {
                 type: 'admin_auth_result',
@@ -547,7 +542,6 @@ async function handleAdminAuth(clientId, packet) {
             });
             return;
         }
-        // Ed25519署名を検証
         const { Ed25519 } = await import('./crypto');
         const messageBytes = new TextEncoder().encode(challenge);
         const signatureBytes = hexToBytes(signature);
@@ -561,7 +555,6 @@ async function handleAdminAuth(clientId, packet) {
             return;
         }
         const role = trustManager.getRole(publicKey);
-        // 認証成功 - クライアントIDに公開鍵を紐付け
         client.authenticatedKey = publicKey;
         client.adminRole = role;
         sendWS(client.ws, {
@@ -577,7 +570,6 @@ async function handleAdminAuth(clientId, packet) {
         });
     }
 }
-// 管理者認証チェックヘルパー
 function isAdminAuthenticated(clientId) {
     const client = clients.get(clientId);
     if (!client)
@@ -598,7 +590,6 @@ function handleAdminStatus(clientId) {
     const client = clients.get(clientId);
     if (!client)
         return;
-    // 最高のチェーン高さを持つノードを取得
     const nodes = Array.from(fullNodes.values());
     const bestNode = nodes.length > 0
         ? nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b)
@@ -632,7 +623,7 @@ function handleAdminGetKeys(clientId) {
     if (!isAdminAuthenticated(clientId)) {
         const client = clients.get(clientId);
         if (client)
-            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+            sendWS(client.ws, { type: 'error', data: { message: '認��が必要です' } });
         return;
     }
     const client = clients.get(clientId);
@@ -655,8 +646,6 @@ function handleAdminGetAccount(clientId, packet) {
     if (!client)
         return;
     const address = packet.data.address;
-    // フルノードにアカウント情報をリクエスト
-    // balanceレスポンスをadmin_accountにマッピング
     relayToNode({
         type: 'get_balance',
         data: {
@@ -677,12 +666,10 @@ function handleAdminGetBlocks(clientId, packet) {
     if (!client)
         return;
     const limit = packet.data.limit || 10;
-    // フルノードにブロック情報をリクエスト
-    // 最新 N ブロックを取得
     relayToNode({
         type: 'get_chain',
         data: {
-            from: -limit, // 負の値で最新から取得
+            from: -limit,
             to: 0,
             clientId,
             admin: true
@@ -699,7 +686,6 @@ function handleAdminMempool(clientId) {
     const client = clients.get(clientId);
     if (!client)
         return;
-    // フルノードにmempool情報をリクエスト
     relayToNode({
         type: 'get_mempool',
         data: { clientId }
@@ -716,7 +702,6 @@ function handleAdminGetTransactions(clientId, packet) {
     if (!client)
         return;
     const limit = packet.data.limit || 50;
-    // フルノードに最近のトランザクションをリクエスト
     relayToNode({
         type: 'get_recent_transactions',
         data: {
@@ -732,7 +717,6 @@ async function handleAdminRemoveKey(clientId, packet) {
             sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
         return;
     }
-    // root権限チェック
     if (getAdminRole(clientId) !== 'root') {
         const client = clients.get(clientId);
         if (client)
@@ -828,7 +812,7 @@ function startPeriodicTasks() {
     }, 30000);
 }
 // ============================================================
-// エントリーポイント
+// エントリーポイント ★変更箇所
 // ============================================================
 function main() {
     console.log('========================================');
@@ -836,6 +820,7 @@ function main() {
     console.log('========================================');
     trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
     randomManager = new RandomManager();
+    // --- ★ 初回配布対応: latest_update.json が無ければ node.js から自動生成 ---
     const latestCodePath = path.resolve('./latest_update.json');
     if (fs.existsSync(latestCodePath)) {
         try {
@@ -846,6 +831,31 @@ function main() {
             log('Init', '最新コード読み込み失敗');
         }
     }
+    else {
+        const nodeJsPath = path.resolve('./node.js');
+        if (fs.existsSync(nodeJsPath)) {
+            try {
+                const code = fs.readFileSync(nodeJsPath, 'utf-8');
+                const hash = createHash('sha256').update(code).digest('hex');
+                latestNodeCode = {
+                    version: '0.0.1',
+                    code,
+                    hash,
+                    signer: '',
+                    signature: '',
+                };
+                fs.writeFileSync(latestCodePath, JSON.stringify(latestNodeCode, null, 2));
+                log('Init', `node.js から初回配布パッケージ自動生成: v0.0.1`);
+            }
+            catch (e) {
+                log('Init', `node.js 読み込み失敗: ${e}`);
+            }
+        }
+        else {
+            log('Init', '⚠ latest_update.json も node.js も見つかりません');
+        }
+    }
+    // --- ★ ここまで ---
     startTCPServer();
     startWSSServer();
     startSeedServer();

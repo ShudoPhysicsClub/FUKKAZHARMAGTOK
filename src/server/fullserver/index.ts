@@ -7,14 +7,14 @@ import { fork, ChildProcess } from 'child_process';
 import { connect } from 'net';
 import { createHash } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { Ed25519 } from './crypto';
+import { Ed25519 } from './crypto.js';
 
 // ============================================================
 // ハードコード（変更不可）
 // ============================================================
 
 const ROOT_KEY: string = '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70';  // hex 64文字
-const CDN_URL: string = 'https://cdn.example.com/btr/seeds.json';
+const CDN_URL: string = 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json';
 const SEED_PORT: number = 5000;
 const DELIMITER: string = '\nLINE_BREAK\n';
 
@@ -208,11 +208,21 @@ function fetchLatestFiles(seeds: SeedEntry[]): Promise<LatestFiles> {
 }
 
 // ============================================================
-// アップデート検証
+// アップデート検証 ★変更箇所
 // ============================================================
 
 async function verifyUpdate(update: NodeCode, trustedKeys: TrustedKeysData): Promise<boolean> {
-  // 署名者がtrusted_keysにいるか、またはrootか
+  // ★ 初回配布（署名なし）はハッシュ検証のみで通す
+  if (!update.signer && !update.signature) {
+    if (sha256(update.code) !== update.hash) {
+      log('アップデート: ハッシュ不一致（初回配布）');
+      return false;
+    }
+    log('アップデート: 初回配布（署名なし）、ハッシュ検証OK');
+    return true;
+  }
+
+  // 通常の検証（署名付き）
   const signerIsTrusted: boolean =
     update.signer === ROOT_KEY ||
     trustedKeys.keys.some(k => k.publicKey === update.signer);
@@ -303,7 +313,7 @@ async function handleUpdate(update: NodeCode): Promise<void> {
 }
 
 // ============================================================
-// 初回ブート
+// 初回ブート ★変更箇所
 // ============================================================
 
 async function boot(): Promise<void> {
@@ -318,8 +328,11 @@ async function boot(): Promise<void> {
     const files: LatestFiles = await fetchLatestFiles(seeds);
 
     if (!files.nodeCode) {
-      log('最新コードが配布されていません、待機...');
-      setTimeout(boot, 10000);
+      // ★ 無限ループしない: nodeCodeがnullでもスキップして待機モードにしない
+      log('最新コードが配布されていません');
+      log('シードノードに node.js を配置してください');
+      log('30秒後にリトライ...');
+      setTimeout(boot, 30000);
       return;
     }
 

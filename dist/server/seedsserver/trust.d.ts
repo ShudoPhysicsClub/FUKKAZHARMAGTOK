@@ -1,4 +1,4 @@
-import { TrustedKeysFile, Role, UpdatePackage } from './types';
+import { TrustedKeysFile, Role, UpdatePackage } from './types.js';
 export declare class TrustManager {
     private rootKey;
     private trustedKeys;

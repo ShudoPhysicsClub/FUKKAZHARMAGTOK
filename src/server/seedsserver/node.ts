@@ -6,7 +6,7 @@
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { Ed25519 } from './crypto';
+import { Ed25519 } from '../fullserver/crypto.js';
 
 const DELIMITER: string = '\nLINE_BREAK\n';
 const BTR_ADDRESS: string = '0x0000000000000000';

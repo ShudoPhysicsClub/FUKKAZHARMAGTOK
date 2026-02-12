@@ -2,8 +2,8 @@
 // BTR - 信頼管理（権限・鍵管理）
 // crypto.ts の Ed25519 を使用
 // ============================================================
-import { canonicalJSON } from './protocol';
-import { Ed25519 } from './crypto';
+import { canonicalJSON } from './protocol.js';
+import { Ed25519 } from './crypto.js';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';

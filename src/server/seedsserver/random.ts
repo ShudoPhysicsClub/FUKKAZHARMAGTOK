@@ -3,7 +3,7 @@
 // ============================================================
 
 import { createHash, randomBytes } from 'crypto';
-import { NodeInfo, Packet } from './types';
+import { NodeInfo, Packet } from './types.js';
 
 function sha256(data: string): string {
   return createHash('sha256').update(data).digest('hex');
