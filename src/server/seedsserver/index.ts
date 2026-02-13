@@ -1136,6 +1136,9 @@ function handleClientPacket(clientId: string, packet: Packet): void {
   const conn = clients.get(clientId);
   if (!conn) return;
 
+  // デバッグログ追加
+  log('WSS', `パケット受信: ${packet.type} from ${clientId}`);
+
   switch (packet.type) {
     case 'mine':
       broadcastToNodes({ type: 'block_broadcast', data: { ...packet.data, minerId: clientId } });
@@ -1161,7 +1164,10 @@ function handleClientPacket(clientId: string, packet: Packet): void {
     case 'admin_distribute': handleAdminDistribute(clientId, packet); break;
     case 'admin_clear_mempool': handleAdminClearMempool(clientId); break;
     case 'admin_remove_tx': handleAdminRemoveTx(clientId, packet); break;
-    case 'admin_deploy_node': handleAdminDeployNode(clientId, packet); break;
+    case 'admin_deploy_node': 
+      log('Admin', `admin_deploy_nodeハンドラ呼び出し: ${clientId}`);
+      handleAdminDeployNode(clientId, packet); 
+      break;
     default: log('WSS', `不明なパケット: ${packet.type} from ${clientId}`);
   }
 }
@@ -1549,25 +1555,35 @@ async function handleAdminRemoveTx(clientId: string, packet: Packet): Promise<vo
 }
 
 async function handleAdminDeployNode(clientId: string, packet: Packet): Promise<void> {
+  log('Admin', `★★★ handleAdminDeployNode開始: clientId=${clientId}`);
+  
   if (!isAdminAuthenticated(clientId)) {
     const client = clients.get(clientId);
     if (client) sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+    log('Admin', 'handleAdminDeployNode: 認証されていません');
     return;
   }
   
   if (getAdminRole(clientId) !== 'root') {
     const client = clients.get(clientId);
     if (client) sendWS(client.ws, { type: 'admin_deploy_node_result', data: { success: false, message: 'root権限が必要です' } });
+    log('Admin', 'handleAdminDeployNode: root権限がありません');
     return;
   }
   
   const update: UpdatePackage = packet.data;
   const client = clients.get(clientId);
-  if (!client) return;
+  if (!client) {
+    log('Admin', 'handleAdminDeployNode: クライアントが見つかりません');
+    return;
+  }
+  
+  log('Admin', `handleAdminDeployNode: アップデートパッケージ検証開始 v${update.version}`);
   
   // アップデートパッケージの検証
   if (!await trustManager.verifyUpdate(update)) {
     sendWS(client.ws, { type: 'admin_deploy_node_result', data: { success: false, message: '署名検証失敗' } });
+    log('Admin', 'handleAdminDeployNode: 署名検証失敗');
     return;
   }
   
@@ -1591,6 +1607,8 @@ async function handleAdminDeployNode(clientId: string, packet: Packet): Promise<
       message: `v${update.version} を全ノードに配信しました` 
     } 
   });
+  
+  log('Admin', `handleAdminDeployNode完了: v${update.version}`);
 }
 
 // ============================================================
