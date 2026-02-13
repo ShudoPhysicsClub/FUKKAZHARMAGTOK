@@ -718,7 +718,7 @@ function finishSync(): void {
   isSyncing = false;
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   saveState();
-  sendToSeed({ type: 'height', data: { height: chain.length } });
+  sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
   log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
 
@@ -738,7 +738,7 @@ function connectToSeed(): void {
     // ノード登録
     sendToSeed({
       type: 'register',
-      data: { chainHeight: chain.length }
+      data: { chainHeight: chain.length, difficulty: currentDifficulty }
     });
 
     // 同期待ちタイマー開始
@@ -973,6 +973,18 @@ async function handlePacket(packet: Packet): Promise<void> {
       sendToSeed({
         type: 'token_info',
         data: { clientId, token: token || null }
+      });
+      break;
+    }
+
+    case 'get_tokens_list': {
+      const clientId: string = packet.data?.clientId;
+      const list = Array.from(tokens.values()).map(t => ({
+        address: t.address, symbol: t.symbol, name: t.name, totalSupply: t.totalSupply
+      }));
+      sendToSeed({
+        type: 'tokens_list',
+        data: { clientId, tokens: list }
       });
       break;
     }
@@ -1299,7 +1311,7 @@ async function handlePacket(packet: Packet): Promise<void> {
 function startPeriodicTasks(): void {
   // チェーン高さを定期報告（30秒ごと）
   setInterval(() => {
-    sendToSeed({ type: 'height', data: { height: chain.length } });
+    sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
   }, 30000);
 
   // 状態保存（60秒ごと）

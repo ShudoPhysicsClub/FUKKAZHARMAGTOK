@@ -329,7 +329,7 @@ function startTCPServer(): void {
     const buffer = new PacketBuffer();
     const conn: FullNodeConnection = {
       socket, buffer,
-      info: { id: nodeId, host: socket.remoteAddress, connectedAt: Date.now(), lastPing: Date.now(), chainHeight: 0 }
+      info: { id: nodeId, host: socket.remoteAddress, connectedAt: Date.now(), lastPing: Date.now(), chainHeight: 0, difficulty: 1 }
     };
     fullNodes.set(nodeId, conn);
     log('TCP', `フルノード接続: ${nodeId} (${socket.remoteAddress})`);
@@ -402,6 +402,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     case 'pong': conn.info.lastPing = Date.now(); break;
     case 'register':
       conn.info.chainHeight = packet.data?.chainHeight || 0;
+      conn.info.difficulty = packet.data?.difficulty || 1;
       sendTCP(conn.socket, {
         type: 'node_list',
         data: { nodes: Array.from(fullNodes.values()).map(n => ({ id: n.info.id, host: n.info.host, chainHeight: n.info.chainHeight })) }
@@ -426,6 +427,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
       break;
     case 'height':
       conn.info.chainHeight = packet.data?.height || 0;
+      if (packet.data?.difficulty) conn.info.difficulty = packet.data.difficulty;
       if (packet.data?.clientId) {
         const client = clients.get(packet.data.clientId);
         if (client) sendWS(client.ws, packet);
@@ -456,7 +458,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
       break;
     }
     case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
-    case 'token_info': case 'rate': case 'tx_result': case 'block_template':
+    case 'token_info': case 'tokens_list': case 'rate': case 'tx_result': case 'block_template':
     case 'admin_mempool': case 'admin_transactions': case 'admin_account': case 'admin_blocks':
     case 'admin_mint_result': case 'admin_distribute_result': case 'admin_clear_mempool_result': case 'admin_remove_tx_result':
       if (packet.data?.clientId) {
@@ -562,7 +564,7 @@ function handleClientPacket(clientId: string, packet: Packet): void {
     case 'tx':
       relayToNode({ type: 'tx', data: { ...packet.data, clientId } });
       break;
-    case 'get_balance': case 'get_chain': case 'get_height': case 'get_token': case 'get_rate': case 'get_block_template':
+    case 'get_balance': case 'get_chain': case 'get_height': case 'get_token': case 'get_rate': case 'get_block_template': case 'get_tokens_list':
       relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
       break;
     case 'update': handleUpdateFromClient(clientId, packet); break;
@@ -724,7 +726,7 @@ function handleAdminStatus(clientId: string): void {
     nodeCount: fullNodes.size,
     clientCount: clients.size,
     chainHeight: bestNode?.info.chainHeight || 0,
-    difficulty: 1,
+    difficulty: bestNode?.info.difficulty || 1,
     latestBlock: null as any
   };
 

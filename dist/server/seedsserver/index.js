@@ -270,7 +270,7 @@ function startTCPServer() {
         const buffer = new PacketBuffer();
         const conn = {
             socket, buffer,
-            info: { id: nodeId, host: socket.remoteAddress, connectedAt: Date.now(), lastPing: Date.now(), chainHeight: 0 }
+            info: { id: nodeId, host: socket.remoteAddress, connectedAt: Date.now(), lastPing: Date.now(), chainHeight: 0, difficulty: 1 }
         };
         fullNodes.set(nodeId, conn);
         log('TCP', `フルノード接続: ${nodeId} (${socket.remoteAddress})`);
@@ -340,6 +340,7 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'register':
             conn.info.chainHeight = packet.data?.chainHeight || 0;
+            conn.info.difficulty = packet.data?.difficulty || 1;
             sendTCP(conn.socket, {
                 type: 'node_list',
                 data: { nodes: Array.from(fullNodes.values()).map(n => ({ id: n.info.id, host: n.info.host, chainHeight: n.info.chainHeight })) }
@@ -363,6 +364,8 @@ function handleNodePacket(nodeId, packet) {
             break;
         case 'height':
             conn.info.chainHeight = packet.data?.height || 0;
+            if (packet.data?.difficulty)
+                conn.info.difficulty = packet.data.difficulty;
             if (packet.data?.clientId) {
                 const client = clients.get(packet.data.clientId);
                 if (client)
@@ -400,6 +403,7 @@ function handleNodePacket(nodeId, packet) {
         case 'chain_chunk':
         case 'chain_sync_done':
         case 'token_info':
+        case 'tokens_list':
         case 'rate':
         case 'tx_result':
         case 'block_template':
@@ -525,6 +529,7 @@ function handleClientPacket(clientId, packet) {
         case 'get_token':
         case 'get_rate':
         case 'get_block_template':
+        case 'get_tokens_list':
             relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
             break;
         case 'update':
@@ -706,7 +711,7 @@ function handleAdminStatus(clientId) {
         nodeCount: fullNodes.size,
         clientCount: clients.size,
         chainHeight: bestNode?.info.chainHeight || 0,
-        difficulty: 1,
+        difficulty: bestNode?.info.difficulty || 1,
         latestBlock: null
     };
     sendWS(client.ws, { type: 'admin_status', data: status });

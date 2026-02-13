@@ -112,4 +112,5 @@ export interface NodeInfo {
     connectedAt: number;
     lastPing: number;
     chainHeight: number;
+    difficulty?: number;
 }

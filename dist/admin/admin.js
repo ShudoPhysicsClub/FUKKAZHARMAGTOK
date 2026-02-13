@@ -265,6 +265,9 @@ window.switchTab = function (tabName) {
         case 'dashboard':
             refreshDashboard();
             break;
+        case 'mempool':
+            window.refreshMempool();
+            break;
         case 'nodes':
             window.refreshNodes();
             break;
@@ -286,7 +289,6 @@ function refreshDashboard() {
     if (!isAuthenticated)
         return;
     send({ type: 'admin_status' });
-    send({ type: 'admin_mempool' });
 }
 function updateDashboard() {
     if (networkStatus.nodeCount !== undefined) {

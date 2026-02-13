@@ -334,6 +334,9 @@ function handlePacket(packet: Packet): void {
     case 'dashboard':
       refreshDashboard();
       break;
+    case 'mempool':
+      (window as any).refreshMempool();
+      break;
     case 'nodes':
       (window as any).refreshNodes();
       break;
@@ -356,7 +359,6 @@ function handlePacket(packet: Packet): void {
 function refreshDashboard(): void {
   if (!isAuthenticated) return;
   send({ type: 'admin_status' });
-  send({ type: 'admin_mempool' });
 }
 
 function updateDashboard(): void {

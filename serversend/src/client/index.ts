@@ -33,6 +33,8 @@ let ws: WebSocket | null = null;
 let wallet: Wallet | null = null;
 let balance: number = 0;
 let tokenBalances: Record<string, number> = {};
+let tokenInfoCache: Record<string, { symbol: string; name: string }> = {};
+let miningTargetToken: string = '';  // 空=BTRのまま、アドレス指定=掘ったらswap
 let isMining: boolean = false;
 let mineWorker: Worker | null = null;
 let minedCount: number = 0;
@@ -144,7 +146,14 @@ function handlePacket(packet: Packet): void {
       balance = packet.data.balance || 0;
       tokenBalances = packet.data.tokens || {};
       nonce = packet.data.nonce || 0;
+      // 未知のトークンの情報を取得
+      for (const addr of Object.keys(tokenBalances)) {
+        if (!tokenInfoCache[addr]) {
+          send({ type: 'get_token', data: { address: addr } });
+        }
+      }
       updateBalanceUI();
+      updateMiningTokenSelect();
       break;
     case 'height':
       chainHeight = packet.data.height || 0;
@@ -202,8 +211,40 @@ function handlePacket(packet: Packet): void {
       if (wallet) requestBalance();
       break;
     case 'rate':
-      $('swapRate').textContent = `レート: 1 token = ${packet.data.rate?.toFixed(6) || '?'} BTR`;
+      if (packet.data.rate != null) {
+        const rateTokenAddr = packet.data.tokenAddress || '';
+        const rateInfo = tokenInfoCache[rateTokenAddr];
+        const rateLabel = rateInfo ? rateInfo.symbol : rateTokenAddr.slice(0, 10) + '...';
+        $('swapRate').textContent = `レート: 1 ${rateLabel} = ${packet.data.rate.toFixed(6)} BTR`;
+      } else {
+        $('swapRate').textContent = 'レート: 取得失敗（プールなし？）';
+      }
       break;
+    case 'token_info': {
+      const ti = packet.data?.token;
+      if (ti && ti.address) {
+        tokenInfoCache[ti.address] = { symbol: ti.symbol, name: ti.name };
+        // UIを更新（キャッシュが埋まったタイミングで再描画）
+        updateBalanceUI();
+        updateMiningTokenSelect();
+      }
+      break;
+    }
+    case 'tokens_list': {
+      const list = packet.data?.tokens || [];
+      // キャッシュに全部入れる
+      for (const t of list) {
+        tokenInfoCache[t.address] = { symbol: t.symbol, name: t.name };
+      }
+      updateMiningTokenSelect();
+      // 検索結果を表示（pending searchがあれば）
+      if ((window as any).__pendingTokenSearch) {
+        const query: string = (window as any).__pendingTokenSearch;
+        (window as any).__pendingTokenSearch = null;
+        showTokenSearchResults(query, list);
+      }
+      break;
+    }
     case 'block_template': {
       const tmpl = packet.data;
       if (tmpl) {
@@ -214,6 +255,7 @@ function handlePacket(packet: Packet): void {
         pendingTransactions = tmpl.transactions || [];
         $('chainHeight').textContent = String(chainHeight);
         $('difficulty').textContent = String(currentDifficulty);
+        addLog('miningLog', `テンプレート受信: height=${chainHeight} tx=${pendingTransactions.length} diff=${currentDifficulty} reward=${latestReward}`, 'info');
         // テンプレート受信 → マイニング開始
         if (isMining) {
           startMineWorker();
@@ -231,6 +273,17 @@ function handlePacket(packet: Packet): void {
       $('difficulty').textContent = String(currentDifficulty);
       addLog('miningLog', `ブロック承認! height=${chainHeight} diff=${currentDifficulty}`, 'success');
       if (wallet) requestBalance();
+      // 自動スワップ: トークンが選択されてたら報酬をswap
+      if (miningTargetToken && wallet) {
+        const swapAmount = acc.reward || latestReward;
+        const info = tokenInfoCache[miningTargetToken];
+        addLog('miningLog', `自動スワップ: ${swapAmount} BTR → ${info ? info.symbol : miningTargetToken.slice(0, 10) + '...'}`, 'info');
+        signAndSend({
+          type: 'swap',
+          token: BTR_ADDRESS,
+          data: { tokenIn: BTR_ADDRESS, tokenOut: miningTargetToken, amountIn: swapAmount }
+        });
+      }
       // すぐ次を掘る
       if (isMining) {
         if (mineWorker) { mineWorker.terminate(); mineWorker = null; }
@@ -393,7 +446,11 @@ function updateBalanceUI(): void {
     $('tokenBalances').style.display = 'block';
     $('tokenList').innerHTML = tokenKeys.map(addr => {
       const bal = tokenBalances[addr];
-      return `<div class="token-item"><span style="color:var(--text2);font-size:11px">${addr}</span><span>${bal.toLocaleString()}</span></div>`;
+      const info = tokenInfoCache[addr];
+      const label = info
+        ? `${info.symbol} <span style="color:var(--text2);font-size:11px">${info.name}</span> <span style="color:var(--text2);font-size:10px;opacity:0.6">${addr.slice(0, 10)}...</span>`
+        : `<span style="color:var(--text2);font-size:11px">${addr}</span>`;
+      return `<div class="token-item"><span>${label}</span><span>${bal.toLocaleString()}</span></div>`;
     }).join('');
   } else {
     $('tokenBalances').style.display = 'none';
@@ -466,6 +523,67 @@ async function executeSwap(): Promise<void> {
   const amountIn: number = parseFloat($val('swapAmount'));
   if (!tokenOut || isNaN(amountIn) || amountIn <= 0) { addLog('globalLog', '全項目を入力', 'error'); return; }
   await signAndSend({ type: 'swap', token: BTR_ADDRESS, data: { tokenIn, tokenOut, amountIn } });
+}
+
+function requestSwapRate(): void {
+
+  // 売る/買うどちらか非BTRのアドレスでレートを取得
+  const tokenIn: string = $val('swapIn') || BTR_ADDRESS;
+  const tokenOut: string = $val('swapOut');
+  const tokenAddr = tokenIn !== BTR_ADDRESS ? tokenIn : tokenOut;
+  if (tokenAddr && tokenAddr !== BTR_ADDRESS && tokenAddr.length > 4) {
+    send({ type: 'get_rate', data: { address: tokenAddr } });
+    $('swapRate').textContent = 'レート: 取得中...';
+  }
+}
+
+function searchToken(): void {
+  const query: string = $val('tokenSearch').toUpperCase();
+  if (!query) { $('tokenSearchResults').innerHTML = '<div style="color:var(--text2);font-size:12px">シンボルを入力してください</div>'; return; }
+  $('tokenSearchResults').innerHTML = '<div style="color:var(--text2);font-size:12px">検索中...</div>';
+  (window as any).__pendingTokenSearch = query;
+  send({ type: 'get_tokens_list', data: {} });
+}
+
+function showTokenSearchResults(query: string, allTokens: { address: string; symbol: string; name: string; totalSupply: number }[]): void {
+  const matches = allTokens.filter(t =>
+    t.symbol.toUpperCase().includes(query) || t.name.toUpperCase().includes(query)
+  );
+  if (matches.length === 0) {
+    $('tokenSearchResults').innerHTML = '<div style="color:var(--text2);font-size:12px">見つかりませんでした</div>';
+    return;
+  }
+  $('tokenSearchResults').innerHTML = matches.map(t =>
+    `<div class="token-item" style="flex-direction:column;gap:4px;cursor:pointer" data-addr="${t.address}">
+      <div><strong style="color:var(--accent)">${t.symbol}</strong> <span style="color:var(--text2)">${t.name}</span></div>
+      <div style="font-size:10px;color:var(--text2)">${t.address}　供給量: ${t.totalSupply.toLocaleString()}</div>
+    </div>`
+  ).join('');
+  // クリックでアドレスをコピー
+  $('tokenSearchResults').querySelectorAll('[data-addr]').forEach((el: Element) => {
+    el.addEventListener('click', () => {
+      const addr = (el as HTMLElement).dataset.addr || '';
+      navigator.clipboard.writeText(addr);
+      addLog('globalLog', `アドレスコピー: ${addr}`, 'success');
+    });
+  });
+}
+
+function updateMiningTokenSelect(): void {
+  const select = document.getElementById('miningTarget') as HTMLSelectElement | null;
+  if (!select) return;
+  const prev = select.value;
+  // BTR（デフォルト）
+  let html = '<option value="">BTR（そのまま）</option>';
+  // 既知トークンを追加
+  const allTokenAddrs = new Set([...Object.keys(tokenBalances), ...Object.keys(tokenInfoCache)]);
+  for (const addr of allTokenAddrs) {
+    const info = tokenInfoCache[addr];
+    const label = info ? `${info.symbol} (${info.name})` : addr.slice(0, 16) + '...';
+    html += `<option value="${addr}">${label}</option>`;
+  }
+  select.innerHTML = html;
+  select.value = prev || '';
 }
 
 // ============================================================
@@ -551,7 +669,7 @@ function startMineWorker(): void {
     transactions: pendingTransactions as unknown[],
   };
 
-  addLog('miningLog', `掘り始め: #${block.height} diff=${currentDifficulty} prev=${latestBlockHash.slice(0, 12)}...`, 'info');
+  addLog('miningLog', `掘り始め: #${block.height} diff=${currentDifficulty} tx=${block.transactions.length} prev=${latestBlockHash.slice(0, 12)}...`, 'info');
 
   const blob: Blob = new Blob([MINE_WORKER_CODE], { type: 'application/javascript' });
   const url: string = URL.createObjectURL(blob);
@@ -565,7 +683,7 @@ function startMineWorker(): void {
       $('hashrate').textContent = rate.toLocaleString() + ' H/s';
     } else if (e.data.type === 'found') {
       const minedBlock = { ...block, nonce: e.data.nonce, hash: e.data.hash };
-      addLog('miningLog', `ブロック発見! #${block.height} nonce=${e.data.nonce} hash=${e.data.hash.slice(0, 16)}...`, 'success');
+      addLog('miningLog', `ブロック発見! #${block.height} nonce=${e.data.nonce} tx=${block.transactions.length} hash=${e.data.hash.slice(0, 16)}...`, 'success');
       minedCount++;
       $('minedBlocks').textContent = String(minedCount);
       latestBlockHash = e.data.hash;
@@ -682,6 +800,11 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
         <div class="stat-box"><div class="label">難易度</div><div class="value" id="difficulty">-</div></div>
         <div class="stat-box"><div class="label">採掘ブロック</div><div class="value" id="minedBlocks">0</div></div>
       </div>
+      <label>報酬の受け取り方</label>
+      <select id="miningTarget">
+        <option value="">BTR（そのまま）</option>
+      </select>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">トークンを選ぶと、ブロック報酬を自動でスワップします</div>
       <button class="btn" id="btnMine">マイニング開始</button>
     </div>
     <div class="card"><h2>ログ</h2><div class="log-box" id="miningLog"></div></div>
@@ -716,6 +839,12 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
         <div class="stat-box"><div class="label">ブロック高さ</div><div class="value" id="chainHeight">-</div></div>
         <div class="stat-box"><div class="label">接続ノード</div><div class="value" id="nodeCount">-</div></div>
       </div>
+    </div>
+    <div class="card"><h2>トークン検索</h2>
+      <label>シンボルで検索</label>
+      <input type="text" id="tokenSearch" placeholder="例: PHY">
+      <button class="btn secondary" id="btnTokenSearch">検索</button>
+      <div id="tokenSearchResults" style="margin-top:12px"></div>
     </div>
     <div class="card"><h2>ログ</h2><div class="log-box" id="globalLog"></div></div>
   </div>
@@ -753,12 +882,37 @@ function bindEvents(): void {
 
   // マイニング
   $('btnMine').addEventListener('click', () => toggleMining());
+  $('miningTarget').addEventListener('change', () => {
+    miningTargetToken = ($('miningTarget') as HTMLSelectElement).value;
+    const info = tokenInfoCache[miningTargetToken];
+    if (miningTargetToken) {
+      addLog('miningLog', `報酬先: ${info ? info.symbol : miningTargetToken.slice(0, 10) + '...'}に自動スワップ`, 'info');
+    } else {
+      addLog('miningLog', '報酬先: BTR（そのまま）', 'info');
+    }
+  });
 
   // トークン
   $('btnCreateToken').addEventListener('click', () => createToken());
 
   // スワップ
   $('btnSwap').addEventListener('click', () => executeSwap());
+  // トークン検索
+  $('btnTokenSearch').addEventListener('click', () => searchToken());
+  $('tokenSearch').addEventListener('keydown', (e: Event) => {
+    if ((e as KeyboardEvent).key === 'Enter') searchToken();
+  });
+  // スワップ入力変更時にレート取得
+  $('swapOut').addEventListener('change', () => requestSwapRate());
+  $('swapOut').addEventListener('input', () => {
+    if ((window as any).__rateDebounce) clearTimeout((window as any).__rateDebounce);
+    (window as any).__rateDebounce = setTimeout(requestSwapRate, 500);
+  });
+  $('swapIn').addEventListener('change', () => requestSwapRate());
+  $('swapIn').addEventListener('input', () => {
+    if ((window as any).__rateDebounce) clearTimeout((window as any).__rateDebounce);
+    (window as any).__rateDebounce = setTimeout(requestSwapRate, 500);
+  });
 }
 
 // ============================================================
