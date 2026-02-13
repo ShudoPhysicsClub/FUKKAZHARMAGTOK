@@ -455,7 +455,7 @@ class Ed25519 {
 // 設定
 // ============================================================
 const CONFIG = {
-    ROOT_PUBLIC_KEY: ['04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',],
+    ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
     TCP_PORT: 5000,
     WSS_PORT: 443,
     WSS_DEV_PORT: 8443,
@@ -931,6 +931,9 @@ function handleNodePacket(nodeId, packet) {
         case 'rate':
         case 'tx_result':
         case 'block_template':
+        case 'mempool':
+        case 'transactions':
+        case 'block':
         case 'admin_mempool':
         case 'admin_transactions':
         case 'admin_account':
@@ -1056,6 +1059,9 @@ function handleClientPacket(clientId, packet) {
         case 'get_rate':
         case 'get_block_template':
         case 'get_tokens_list':
+        case 'get_mempool':
+        case 'get_recent_transactions':
+        case 'get_block':
             relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
             break;
         case 'update':
@@ -1627,7 +1633,7 @@ async function main() {
     console.log('========================================');
     console.log('  BTR (Buturi Coin) Seed Node');
     console.log('========================================');
-    trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY[0]);
+    trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
     randomManager = new RandomManager();
     // --- ★ latest_update.json 読み込み（署名付きのみ受け入れ） ---
     const latestCodePath = path.resolve('./latest_update.json');

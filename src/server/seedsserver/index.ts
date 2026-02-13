@@ -518,7 +518,7 @@ class Ed25519 {
 // ============================================================
 
 const CONFIG = {
-  ROOT_PUBLIC_KEY: ['04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',],
+  ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
   TCP_PORT: 5000,
   WSS_PORT: 443,
   WSS_DEV_PORT: 8443,
@@ -1046,6 +1046,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     }
     case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
     case 'token_info': case 'tokens_list': case 'rate': case 'tx_result': case 'block_template':
+    case 'mempool': case 'transactions': case 'block':
     case 'admin_mempool': case 'admin_transactions': case 'admin_account': case 'admin_blocks':
     case 'admin_mint_result': case 'admin_distribute_result': case 'admin_clear_mempool_result': case 'admin_remove_tx_result':
       if (packet.data?.clientId) {
@@ -1155,6 +1156,7 @@ function handleClientPacket(clientId: string, packet: Packet): void {
       relayToNode({ type: 'tx', data: { ...packet.data, clientId } });
       break;
     case 'get_balance': case 'get_chain': case 'get_height': case 'get_token': case 'get_rate': case 'get_block_template': case 'get_tokens_list':
+    case 'get_mempool': case 'get_recent_transactions': case 'get_block':
       relayToNode({ type: packet.type, data: { ...packet.data, clientId } });
       break;
     case 'update': handleUpdateFromClient(clientId, packet); break;
@@ -1745,7 +1747,7 @@ async function main(): Promise<void> {
   console.log('  BTR (Buturi Coin) Seed Node');
   console.log('========================================');
 
-  trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY[0]);
+  trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
   randomManager = new RandomManager();
 
   // --- ★ latest_update.json 読み込み（署名付きのみ受け入れ） ---

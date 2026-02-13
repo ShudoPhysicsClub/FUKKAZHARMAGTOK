@@ -1628,23 +1628,38 @@ async function handlePacket(packet: Packet): Promise<void> {
       break;
     }
 
-    // --- 管理者パネル用 ---
+    // --- 誰でもアクセス可能 ---
     case 'get_mempool': {
       const clientId: string = packet.data?.clientId;
-      sendToSeed({
-        type: 'admin_mempool',
-        data: { 
-          clientId, 
-          count: pendingTxs.length,
-          transactions: pendingTxs.slice(0, 50)  // 最初の50件
-        }
-      });
+      const isAdmin: boolean = packet.data?.admin || false;
+      
+      if (isAdmin) {
+        sendToSeed({
+          type: 'admin_mempool',
+          data: { 
+            clientId, 
+            count: pendingTxs.length,
+            transactions: pendingTxs.slice(0, 50)
+          }
+        });
+      } else {
+        sendToSeed({
+          type: 'mempool',
+          data: { 
+            clientId, 
+            count: pendingTxs.length,
+            transactions: pendingTxs.slice(0, 50)
+          }
+        });
+      }
       break;
     }
 
     case 'get_recent_transactions': {
       const clientId: string = packet.data?.clientId;
       const limit: number = packet.data?.limit || 50;
+      const isAdmin: boolean = packet.data?.admin || false;
+      
       // 最新のブロックからトランザクションを収集
       const recentTxs: Transaction[] = [];
       for (let i = chain.length - 1; i >= 0 && recentTxs.length < limit; i--) {
@@ -1654,10 +1669,36 @@ async function handlePacket(packet: Packet): Promise<void> {
           recentTxs.push(tx);
         }
       }
-      sendToSeed({
-        type: 'admin_transactions',
-        data: { clientId, transactions: recentTxs }
-      });
+      
+      if (isAdmin) {
+        sendToSeed({
+          type: 'admin_transactions',
+          data: { clientId, transactions: recentTxs }
+        });
+      } else {
+        sendToSeed({
+          type: 'transactions',
+          data: { clientId, transactions: recentTxs }
+        });
+      }
+      break;
+    }
+    
+    case 'get_block': {
+      const clientId: string = packet.data?.clientId;
+      const height: number = packet.data?.height;
+      
+      if (height >= 0 && height < chain.length) {
+        sendToSeed({
+          type: 'block',
+          data: { clientId, block: chain[height] }
+        });
+      } else {
+        sendToSeed({
+          type: 'block',
+          data: { clientId, block: null, error: 'ブロックが見つかりません' }
+        });
+      }
       break;
     }
 
