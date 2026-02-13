@@ -11,7 +11,7 @@ import { Ed25519 } from './crypto.js';
 // ハードコード（変更不可）
 // ============================================================
 const ROOT_KEY = '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70'; // hex 64文字
-const CDN_URL = 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json';
+const CDN_URL = 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json';
 const SEED_PORT = 5000;
 const DELIMITER = '\nLINE_BREAK\n';
 // ============================================================

@@ -530,7 +530,7 @@ const CONFIG = {
   SSL_CERT: '/etc/letsencrypt/live/shudo-physics.f5.si/fullchain.pem',
   SSL_KEY: '/etc/letsencrypt/live/shudo-physics.f5.si/privkey.pem',
   SEEDS_PATH: './seeds.json',
-  SEEDS_CDN: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/seeds.json',
+  SEEDS_CDN: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json',
 };
 
 // ============================================================
