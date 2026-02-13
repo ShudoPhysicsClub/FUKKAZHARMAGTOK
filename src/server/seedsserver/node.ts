@@ -6,7 +6,7 @@
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import * as fs from 'fs';
+import * as fs from 'fs'; // ★ mkdirSync用に追加
 type ExtPoint = [bigint, bigint, bigint, bigint];
 type AffinePoint = [bigint, bigint];
 
@@ -884,8 +884,10 @@ function applyTransaction(tx: Transaction, minerAddress: string): void {
       break;
     }
     case 'create_token': {
+      log('Token', `トークン作成開始 - sender: ${tx.from.slice(0, 10)}..., 残高: ${sender.balance}`);
       sender.balance -= CONFIG.TOKEN_CREATION_FEE;
       miner.balance += CONFIG.TOKEN_CREATION_FEE;
+      log('Token', `手数料徴収 - ${CONFIG.TOKEN_CREATION_FEE} BTR, 新残高: ${sender.balance}`);
 
       const tokenAddress: string = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
       const poolRatio: number = tx.data!.poolRatio || 0;

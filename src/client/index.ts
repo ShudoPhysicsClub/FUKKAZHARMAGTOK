@@ -95,6 +95,19 @@ function $val(id: string): string {
   return (document.getElementById(id) as HTMLInputElement).value.trim();
 }
 
+function switchTab(panelName: string): void {
+  // すべてのタブとパネルを非アクティブ化
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  
+  // 指定されたタブとパネルをアクティブ化
+  const targetButton = document.querySelector(`nav button[data-panel="${panelName}"]`);
+  if (targetButton) targetButton.classList.add('active');
+  
+  const targetPanel = $(`panel-${panelName}`);
+  if (targetPanel) targetPanel.classList.add('active');
+}
+
 // ============================================================
 // WebSocket
 // ============================================================
@@ -779,10 +792,18 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
 
   <div class="panel" id="panel-send">
     <div class="card"><h2>BTR送金</h2>
-      <label>宛先アドレス</label><input type="text" id="sendTo" placeholder="0x...">
+      <label>宛先アドレス</label>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input type="text" id="sendTo" placeholder="0x..." style="flex:1;margin-bottom:0">
+        <button class="btn secondary" onclick="scanQR()" style="width:auto;padding:10px 16px">QR</button>
+      </div>
       <label>金額 (BTR)</label><input type="number" id="sendAmount" placeholder="0" step="0.1" min="0">
       <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">ガス代: 1 BTR</div>
       <button class="btn" id="btnSendBTR">送金</button>
+    </div>
+    <div class="card"><h2>受取用QRコード</h2>
+      <label>金額指定（任意）</label><input type="number" id="receiveAmount" placeholder="金額を指定しない場合は空欄" step="0.1" min="0">
+      <button class="btn secondary" onclick="showReceiveQR()">QRコード生成</button>
     </div>
     <div class="card"><h2>トークン送金</h2>
       <label>トークンアドレス</label><input type="text" id="tokenSendToken" placeholder="0x...">
@@ -849,6 +870,29 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
     <div class="card"><h2>ログ</h2><div class="log-box" id="globalLog"></div></div>
   </div>
 </main>
+
+<!-- QRコード表示モーダル -->
+<div id="qrCodeContainer" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:1000;justify-content:center;align-items:center">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;max-width:400px;width:90%;position:relative">
+    <button onclick="closeQRCode()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text);font-size:24px;cursor:pointer;padding:8px">×</button>
+    <h2 style="font-family:var(--mono);font-size:18px;color:var(--accent);margin-bottom:20px;text-align:center">受取用QRコード</h2>
+    <div id="qrCanvas" style="display:flex;justify-content:center;margin-bottom:20px;min-height:256px;align-items:center"></div>
+    <div id="qrInfo" style="font-family:var(--mono);font-size:12px;color:var(--text2);line-height:1.8"></div>
+  </div>
+</div>
+
+<!-- QRスキャナーモーダル -->
+<div id="qrScannerContainer" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:1000">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:90%;max-width:500px">
+    <button onclick="closeQRScanner()" style="position:absolute;top:-40px;right:0;background:none;border:none;color:white;font-size:32px;cursor:pointer;padding:8px">×</button>
+    <video id="qrVideo" style="width:100%;border-radius:12px;border:2px solid var(--accent)"></video>
+    <div style="text-align:center;color:white;font-family:var(--mono);font-size:14px;margin-top:16px">QRコードをカメラに映してください</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 `;
 }
 
@@ -914,6 +958,188 @@ function bindEvents(): void {
     (window as any).__rateDebounce = setTimeout(requestSwapRate, 500);
   });
 }
+
+// ============================================================
+// QRコード機能
+// ============================================================
+
+// QRコード生成
+function generateQRCode(address: string, amount?: number, token?: string): void {
+  const qrContainer = $('qrCodeContainer');
+  const qrCanvas = $('qrCanvas');
+  
+  // QR用データ構築（btr:// URIスキーム）
+  let qrData = `btr://${address}`;
+  const params: string[] = [];
+  if (amount) params.push(`amount=${amount}`);
+  if (token && token !== BTR_ADDRESS) params.push(`token=${token}`);
+  if (params.length > 0) qrData += `?${params.join('&')}`;
+  
+  // canvas要素作成
+  qrCanvas.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  
+  const ctx = canvas.getContext('2d')!;
+  
+  // qrcode-generatorを使用（軽量で確実）
+  if (typeof (window as any).qrcode !== 'undefined') {
+    const qr = (window as any).qrcode(0, 'H');
+    qr.addData(qrData);
+    qr.make();
+    
+    const cellSize = 4;
+    const moduleCount = qr.getModuleCount();
+    const size = moduleCount * cellSize;
+    const offset = (256 - size) / 2;
+    
+    // 白背景
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 256, 256);
+    
+    // QRコード描画
+    ctx.fillStyle = '#000000';
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        if (qr.isDark(row, col)) {
+          ctx.fillRect(offset + col * cellSize, offset + row * cellSize, cellSize, cellSize);
+        }
+      }
+    }
+    
+    canvas.style.border = '8px solid white';
+    canvas.style.borderRadius = '8px';
+    qrCanvas.appendChild(canvas);
+  } else {
+    // フォールバック: テキスト表示
+    qrCanvas.innerHTML = `<div style="padding:40px;text-align:center;border:2px dashed var(--border);border-radius:8px">
+      <div style="font-size:14px;color:var(--text);margin-bottom:8px">QRコード</div>
+      <div style="font-size:11px;color:var(--text2);word-break:break-all">${qrData}</div>
+    </div>`;
+  }
+  
+  // QR情報表示
+  $('qrInfo').innerHTML = `
+    <div><strong>アドレス:</strong> ${address}</div>
+    ${amount ? `<div><strong>金額:</strong> ${amount} ${token === BTR_ADDRESS || !token ? 'BTR' : 'トークン'}</div>` : ''}
+    ${token && token !== BTR_ADDRESS ? `<div><strong>トークン:</strong> ${token}</div>` : ''}
+    <div style="margin-top:12px;padding:8px;background:var(--bg);border-radius:4px;word-break:break-all;font-size:11px;color:var(--text2)">${qrData}</div>
+  `;
+  
+  qrContainer.style.display = 'flex';
+  addLog('QRコード生成完了', 'success');
+}
+
+// 受取用QRコード生成
+(window as any).showReceiveQR = function(): void {
+  if (!wallet) {
+    addLog('ウォレットが必要です', 'error');
+    return;
+  }
+  
+  const amountInput = $('receiveAmount') as HTMLInputElement;
+  const amount = parseFloat(amountInput.value) || 0;
+  
+  generateQRCode(wallet.address, amount > 0 ? amount : undefined);
+};
+
+// QRコードスキャン
+(window as any).scanQR = function(): void {
+  const videoContainer = $('qrScannerContainer');
+  const video = $('qrVideo') as HTMLVideoElement;
+  
+  // カメラ起動
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    .then(stream => {
+      video.srcObject = stream;
+      video.play();
+      videoContainer.style.display = 'block';
+      
+      // QRコードスキャン開始
+      scanQRFromVideo(video, stream);
+    })
+    .catch(err => {
+      addLog('カメラアクセス失敗: ' + err.message, 'error');
+    });
+};
+
+function scanQRFromVideo(video: HTMLVideoElement, stream: MediaStream): void {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  
+  const scan = () => {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      
+      // jsQRライブラリを使用
+      if (typeof (window as any).jsQR !== 'undefined') {
+        const code = (window as any).jsQR(imageData.data, imageData.width, imageData.height);
+        
+        if (code && code.data) {
+          // QRコード検出
+          handleQRData(code.data);
+          
+          // カメラ停止
+          stream.getTracks().forEach(track => track.stop());
+          $('qrScannerContainer').style.display = 'none';
+          return;
+        }
+      }
+    }
+    
+    requestAnimationFrame(scan);
+  };
+  
+  scan();
+}
+
+function handleQRData(data: string): void {
+  addLog('QRコード読み取り: ' + data, 'info');
+  
+  // btr:// 形式のパース
+  if (data.startsWith('btr://')) {
+    try {
+      const url = new URL(data);
+      const address = url.hostname || url.pathname.replace('//', '');
+      const amount = url.searchParams.get('amount');
+      const token = url.searchParams.get('token');
+      
+      // 送金フォームに自動入力
+      ($('sendTo') as HTMLInputElement).value = address;
+      if (amount) ($('sendAmount') as HTMLInputElement).value = amount;
+      if (token) ($('sendToken') as HTMLInputElement).value = token;
+      
+      addLog(`送金情報を入力しました: ${address.slice(0, 10)}...`, 'success');
+      
+      // 送金タブに切り替え
+      switchTab('send');
+    } catch (e) {
+      addLog('QRコード解析エラー: ' + (e as Error).message, 'error');
+    }
+  } else {
+    // 通常のアドレス（0x...）
+    ($('sendTo') as HTMLInputElement).value = data;
+    addLog('アドレスを入力しました', 'success');
+    switchTab('send');
+  }
+}
+
+(window as any).closeQRScanner = function(): void {
+  const video = $('qrVideo') as HTMLVideoElement;
+  if (video.srcObject) {
+    (video.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+  }
+  $('qrScannerContainer').style.display = 'none';
+};
+
+(window as any).closeQRCode = function(): void {
+  $('qrCodeContainer').style.display = 'none';
+};
 
 // ============================================================
 // フォント読み込み
