@@ -85,6 +85,7 @@
             <div class="tab-button" onclick="switchTab('nodes')">ノード管理</div>
             <div class="tab-button" onclick="switchTab('keys')">信頼済み鍵</div>
             <div class="tab-button" onclick="switchTab('coins')">コイン管理</div>
+            <div class="tab-button" onclick="switchTab('deploy')">node.js配信</div>
             <div class="tab-button" onclick="switchTab('transactions')">トランザクション</div>
             <div class="tab-button" onclick="switchTab('accounts')">アカウント検索</div>
             <div class="tab-button" onclick="switchTab('blocks')">ブロック履歴</div>
@@ -185,6 +186,45 @@
                     <p class="small-text">複数アドレスへの一括BTR配布 (root権限のみ)</p>
                     <div class="input-group"><label>配布リスト (1行ずつ: アドレス,金額)</label><textarea id="distributionList" rows="10" placeholder="0x1234...,100&#10;0x5678...,200&#10;0xabcd...,50" style="width:100%;padding:10px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:5px;font-family:'Courier New',monospace;"></textarea></div>
                     <button onclick="distributeCoins()">一括配給実行</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- node.js配信 -->
+        <div id="tab-deploy" class="tab-content">
+            <div class="card">
+                <h2>🚀 node.js配信 (Deploy)</h2>
+                <p class="small-text">フルノード用のnode.jsファイルに署名して全ノードに配信します (ROOT_KEY必須)</p>
+                
+                <div style="margin:15px 0; padding:15px; background:rgba(255,87,34,0.1); border-left:3px solid #FF5722; border-radius:5px;">
+                    <strong style="color:#FF5722;">🔑 ROOT_KEY要件</strong>
+                    <p style="margin-top:8px; color:#ccc; line-height:1.6;">
+                        この機能はROOT_KEYの秘密鍵でログインしている場合のみ使用できます。<br>
+                        ROOT_KEY公開鍵: <code style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:3px;font-size:0.9em;">04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70</code>
+                    </p>
+                </div>
+                
+                <div class="input-group">
+                    <label>バージョン番号</label>
+                    <input type="text" id="nodeCodeVersion" placeholder="例: 1.0.1">
+                    <span class="small-text">形式: x.y.z (例: 1.0.1, 2.3.0)</span>
+                </div>
+                <div class="input-group">
+                    <label>node.jsファイル</label>
+                    <input type="file" id="nodeCodeFile" accept=".js">
+                    <span class="small-text">フルノード用のJavaScriptファイルを選択してください</span>
+                </div>
+                <button onclick="deployNodeCode()">ROOT_KEYで署名して配信</button>
+                <div class="log-box" id="deployLog" style="max-height:300px;"></div>
+                <div style="margin-top:15px; padding:15px; background:rgba(255,193,7,0.1); border-left:3px solid #FFC107; border-radius:5px;">
+                    <strong style="color:#FFC107;">⚠️ 重要な注意事項</strong>
+                    <ul style="margin-top:10px; padding-left:20px; color:#ccc; line-height:1.8;">
+                        <li>この操作はROOT_KEYの秘密鍵が必要です</li>
+                        <li>配信されたnode.jsは全てのフルノードで自動的に適用されます</li>
+                        <li>配信前に必ずローカル環境でテストしてください</li>
+                        <li>ROOT_KEYで署名されるため、極めて慎重に実行してください</li>
+                        <li>不正なコードを配信するとネットワーク全体に影響します</li>
+                    </ul>
                 </div>
             </div>
         </div>

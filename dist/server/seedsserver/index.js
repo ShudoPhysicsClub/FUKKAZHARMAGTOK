@@ -7,7 +7,6 @@ import { createServer as createHTTPSServer } from 'https';
 import { createServer as createHTTPServer } from 'http';
 import fs from 'fs';
 import path from 'path';
-import { createHash } from 'crypto';
 import { PacketBuffer, sendTCP, sendWS } from './protocol.js';
 import { TrustManager } from './trust.js';
 import { RandomManager } from './random.js';
@@ -501,41 +500,92 @@ function hexToBytes(hex) {
 // ============================================================
 // seeds.json & シードノード間接続
 // ============================================================
+async function fetchSeedsFromCDN() {
+    try {
+        log('Seeds', `📡 CDNからseeds.json取得中: ${CONFIG.SEEDS_CDN}`);
+        const https = await import('https');
+        return new Promise((resolve, reject) => {
+            https.get(CONFIG.SEEDS_CDN, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    try {
+                        const seedsFile = JSON.parse(data);
+                        // ローカルにキャッシュ保存
+                        fs.writeFileSync(CONFIG.SEEDS_PATH, JSON.stringify(seedsFile, null, 2));
+                        log('Seeds', `✅ CDNから取得成功: ${seedsFile.seeds.length}件 (キャッシュ保存)`);
+                        resolve(seedsFile.seeds);
+                    }
+                    catch (e) {
+                        reject(e);
+                    }
+                });
+            }).on('error', reject);
+        });
+    }
+    catch (e) {
+        log('Seeds', `❌ CDN取得失敗: ${e}`);
+        throw e;
+    }
+}
 function loadSeeds() {
     try {
         if (fs.existsSync(CONFIG.SEEDS_PATH)) {
             const data = JSON.parse(fs.readFileSync(CONFIG.SEEDS_PATH, 'utf-8'));
-            log('Seeds', `${data.seeds.length}件のシードノード読み込み`);
+            log('Seeds', `📖 seeds.jsonローカルキャッシュ読み込み: ${data.seeds.length}件のシードノード`);
+            // 読み込んだシードの詳細をログ出力
+            data.seeds.forEach((seed, index) => {
+                log('Seeds', `  [${index + 1}] ${seed.host} (priority: ${seed.priority}, pubKey: ${seed.publicKey.slice(0, 16)}...)`);
+            });
             return data.seeds;
+        }
+        else {
+            log('Seeds', `⚠ seeds.jsonが見つかりません: ${CONFIG.SEEDS_PATH}`);
         }
     }
     catch (e) {
-        log('Seeds', `seeds.json 読み込み失敗: ${e}`);
+        log('Seeds', `❌ seeds.json読み込み失敗: ${e}`);
     }
     return [];
 }
 function getMyHost() {
     return process.env.SEED_HOST || 'mail.shudo-physics.com';
 }
-function connectToSeeds() {
+async function connectToSeeds() {
+    // まずCDNから最新のseeds.jsonを取得試行
+    try {
+        const seedsFromCDN = await fetchSeedsFromCDN();
+        if (seedsFromCDN.length > 0) {
+            log('Seeds', `🌐 CDNから最新seeds.json取得完了`);
+        }
+    }
+    catch (e) {
+        log('Seeds', `⚠ CDN取得失敗、ローカルキャッシュを使用: ${e}`);
+    }
     const seeds = loadSeeds();
     const myHost = getMyHost();
+    log('Seeds', `=== シード接続開始: 全${seeds.length}件のシードをポート${CONFIG.SEED_PORT}で試行 ===`);
+    let connectedCount = 0;
     for (const seed of seeds) {
         if (seed.host === myHost) {
             myPriority = seed.priority;
-            log('Seeds', `自分を検出: priority ${myPriority}`);
+            log('Seeds', `✓ 自ノードを検出: ${seed.host} (priority: ${myPriority})`);
             continue;
         }
+        log('Seeds', `→ 接続試行 [${++connectedCount}/${seeds.length - 1}]: ${seed.host}:${CONFIG.SEED_PORT} (priority: ${seed.priority})`);
         connectToSeed(seed);
     }
+    log('Seeds', `=== 接続試行完了: ${connectedCount}件のシードに接続要求送信 ===`);
     determinePrimary();
 }
 function connectToSeed(seed) {
-    if (seedPeers.has(seed.host))
+    if (seedPeers.has(seed.host)) {
+        log('Seeds', `⚠ スキップ: ${seed.host} は既に接続済み`);
         return;
-    log('Seeds', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT}`);
+    }
+    log('Seeds', `🔗 TCP接続開始: ${seed.host}:${CONFIG.SEED_PORT}`);
     const socket = net.connect(CONFIG.SEED_PORT, seed.host, () => {
-        log('Seeds', `シードノード接続成功: ${seed.host}`);
+        log('Seeds', `✅ TCP接続成功: ${seed.host}:${CONFIG.SEED_PORT}`);
         const buffer = new PacketBuffer();
         const conn = {
             socket, buffer,
@@ -545,7 +595,9 @@ function connectToSeed(seed) {
             lastPing: Date.now(),
         };
         seedPeers.set(seed.host, conn);
+        log('Seeds', `📤 seed_helloパケット送信: ${seed.host} (自ホスト: ${getMyHost()}, priority: ${myPriority})`);
         sendTCP(socket, { type: 'seed_hello', data: { host: getMyHost(), priority: myPriority } });
+        log('Seeds', `📤 trusted_keys同期送信: ${seed.host}`);
         sendTCP(socket, { type: 'sync_trusted_keys', data: trustManager.getTrustedKeysFile() });
         socket.on('data', (data) => {
             const packets = buffer.feed(data.toString());
@@ -554,16 +606,16 @@ function connectToSeed(seed) {
         });
         socket.on('close', () => {
             seedPeers.delete(seed.host);
-            log('Seeds', `シードノード切断: ${seed.host}`);
+            log('Seeds', `❌ シードノード切断: ${seed.host} (3秒後に再接続試行)`);
             setTimeout(() => connectToSeed(seed), 3000);
             determinePrimary();
         });
         socket.on('error', (err) => {
-            log('Seeds', `シードノードエラー (${seed.host}): ${err.message}`);
+            log('Seeds', `⚠ シードノード接続中エラー (${seed.host}): ${err.message}`);
         });
     });
     socket.on('error', (err) => {
-        log('Seeds', `シードノード接続失敗 (${seed.host}): ${err.message}`);
+        log('Seeds', `❌ シードノード接続失敗 (${seed.host}:${CONFIG.SEED_PORT}): ${err.message} (5秒後に再試行)`);
         setTimeout(() => connectToSeed(seed), 5000);
     });
 }
@@ -601,7 +653,7 @@ function startSeedServer() {
     const server = net.createServer((socket) => {
         const buffer = new PacketBuffer();
         let peerHost = socket.remoteAddress || 'unknown';
-        log('Seeds', `シードノードからの接続受付: ${peerHost}`);
+        log('Seeds', `📥 着信接続受付: ${peerHost}:${socket.remotePort} → ローカル:${CONFIG.SEED_PORT}`);
         socket.on('data', (data) => {
             const packets = buffer.feed(data.toString());
             for (const packet of packets) {
@@ -615,8 +667,11 @@ function startSeedServer() {
                             publicKey: '',
                             lastPing: Date.now(),
                         });
-                        log('Seeds', `シードノード登録: ${peerHost} (priority: ${packet.data.priority})`);
+                        log('Seeds', `✅ シードノード登録（受信側）: ${peerHost} (priority: ${packet.data.priority})`);
                         determinePrimary();
+                    }
+                    else {
+                        log('Seeds', `⚠ シードノード既存（受信側）: ${peerHost} は既に登録済み`);
                     }
                 }
                 handleSeedPacket(peerHost, packet);
@@ -624,15 +679,21 @@ function startSeedServer() {
         });
         socket.on('close', () => {
             seedPeers.delete(peerHost);
-            log('Seeds', `シードノード切断（受付側）: ${peerHost}`);
+            log('Seeds', `❌ シードノード切断（受信側）: ${peerHost}`);
             determinePrimary();
         });
         socket.on('error', (err) => {
-            log('Seeds', `シードノードエラー（受付側）: ${err.message}`);
+            log('Seeds', `⚠ シードノードエラー（受信側 ${peerHost}）: ${err.message}`);
         });
     });
     server.listen(CONFIG.SEED_PORT, () => {
-        log('Seeds', `シードノード間TCPサーバー起動: port ${CONFIG.SEED_PORT}`);
+        log('Seeds', `🌐 シードノード間TCPサーバー起動: 0.0.0.0:${CONFIG.SEED_PORT} (すべてのインターフェースで待機)`);
+    });
+    server.on('error', (err) => {
+        log('Seeds', `❌ シードサーバーエラー: ${err.message}`);
+        if (err.code === 'EADDRINUSE') {
+            log('Seeds', `⚠ ポート ${CONFIG.SEED_PORT} は既に使用中です`);
+        }
     });
 }
 // ============================================================
@@ -640,8 +701,14 @@ function startSeedServer() {
 // ============================================================
 function handleSeedPacket(peerHost, packet) {
     const conn = seedPeers.get(peerHost);
+    // 重要なパケット以外は簡潔にログ
+    if (packet.type !== 'ping' && packet.type !== 'pong') {
+        log('Seeds', `📨 パケット受信: ${packet.type} from ${peerHost}`);
+    }
     switch (packet.type) {
-        case 'seed_hello': break;
+        case 'seed_hello':
+            log('Seeds', `👋 seed_hello処理完了: ${peerHost}`);
+            break;
         case 'ping':
             if (conn) {
                 conn.lastPing = Date.now();
@@ -655,16 +722,20 @@ function handleSeedPacket(peerHost, packet) {
         case 'sync_trusted_keys':
             if (packet.data) {
                 trustManager.syncTrustedKeys(packet.data);
-                log('Seeds', `trusted_keys 同期受信: ${peerHost}`);
+                log('Seeds', `🔑 trusted_keys同期完了: ${peerHost} (${packet.data.keys?.length || 0}件)`);
             }
             break;
         case 'who_is_primary':
-            if (conn)
-                sendTCP(conn.socket, { type: 'primary_is', data: { host: findPrimaryHost() } });
+            if (conn) {
+                const primaryHost = findPrimaryHost();
+                sendTCP(conn.socket, { type: 'primary_is', data: { host: primaryHost } });
+                log('Seeds', `📢 プライマリ情報送信: ${primaryHost} → ${peerHost}`);
+            }
             break;
         case 'random_result':
             broadcastToNodes(packet);
             broadcastToClients(packet);
+            log('Seeds', `🎲 分散乱数ブロードキャスト: from ${peerHost}`);
             break;
         case 'update':
             if (packet.data) {
@@ -673,7 +744,10 @@ function handleSeedPacket(peerHost, packet) {
                         latestNodeCode = packet.data;
                         fs.writeFileSync('./latest_update.json', JSON.stringify(packet.data));
                         broadcastToNodes(packet);
-                        log('Seeds', `アップデート同期: v${packet.data.version} from ${peerHost}`);
+                        log('Seeds', `⬆️ アップデート同期: v${packet.data.version} from ${peerHost}`);
+                    }
+                    else {
+                        log('Seeds', `⚠ アップデート検証失敗: from ${peerHost}`);
                     }
                 });
             }
@@ -681,9 +755,10 @@ function handleSeedPacket(peerHost, packet) {
         case 'block_broadcast':
             broadcastToNodes(packet);
             broadcastToClients({ type: 'new_block', data: packet.data });
+            log('Seeds', `🔲 ブロックブロードキャスト: from ${peerHost}`);
             break;
         default:
-            log('Seeds', `不明なシード間パケット: ${packet.type} from ${peerHost}`);
+            log('Seeds', `❓ 不明なシード間パケット: ${packet.type} from ${peerHost}`);
     }
 }
 function startSeedHeartbeat() {
@@ -1016,6 +1091,9 @@ function handleClientPacket(clientId, packet) {
             break;
         case 'admin_remove_tx':
             handleAdminRemoveTx(clientId, packet);
+            break;
+        case 'admin_deploy_node':
+            handleAdminDeployNode(clientId, packet);
             break;
         default: log('WSS', `不明なパケット: ${packet.type} from ${clientId}`);
     }
@@ -1369,6 +1447,45 @@ async function handleAdminRemoveTx(clientId, packet) {
         data: { signature, clientId }
     });
 }
+async function handleAdminDeployNode(clientId, packet) {
+    if (!isAdminAuthenticated(clientId)) {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'error', data: { message: '認証が必要です' } });
+        return;
+    }
+    if (getAdminRole(clientId) !== 'root') {
+        const client = clients.get(clientId);
+        if (client)
+            sendWS(client.ws, { type: 'admin_deploy_node_result', data: { success: false, message: 'root権限が必要です' } });
+        return;
+    }
+    const update = packet.data;
+    const client = clients.get(clientId);
+    if (!client)
+        return;
+    // アップデートパッケージの検証
+    if (!await trustManager.verifyUpdate(update)) {
+        sendWS(client.ws, { type: 'admin_deploy_node_result', data: { success: false, message: '署名検証失敗' } });
+        return;
+    }
+    // 最新コードとして保存
+    latestNodeCode = update;
+    fs.writeFileSync('./latest_update.json', JSON.stringify(update, null, 2));
+    log('Admin', `node.js配信: v${update.version} by ${update.signer.slice(0, 16)}...`);
+    // 全フルノードに配信
+    broadcastToNodes({ type: 'update', data: update });
+    // 全シードノードに配信
+    broadcastToSeeds({ type: 'update', data: update });
+    sendWS(client.ws, {
+        type: 'admin_deploy_node_result',
+        data: {
+            success: true,
+            version: update.version,
+            message: `v${update.version} を全ノードに配信しました`
+        }
+    });
+}
 // ============================================================
 // 分散乱数
 // ============================================================
@@ -1437,21 +1554,62 @@ function startHeartbeat() {
 function startPeriodicTasks() {
     setInterval(startRandomRound, CONFIG.RANDOM_INTERVAL);
     setTimeout(startRandomRound, 5000);
+    // 30秒ごとの統計表示（既存）
     setInterval(() => {
         const p = isPrimary ? '★PRIMARY' : 'SECONDARY';
         log('Stats', `[${p}] ノード: ${fullNodes.size}, クライアント: ${clients.size}, シード: ${seedPeers.size}`);
     }, 30000);
+    // 60秒ごとのシード接続詳細レポート（新規）
+    setInterval(() => {
+        log('Seeds', `━━━ シード接続状況レポート ━━━`);
+        log('Seeds', `接続済みシード数: ${seedPeers.size}件`);
+        if (seedPeers.size === 0) {
+            log('Seeds', `⚠ 接続済みシードなし - seeds.jsonを確認してください`);
+        }
+        else {
+            let index = 1;
+            for (const [host, conn] of seedPeers) {
+                const timeSinceLastPing = Date.now() - conn.lastPing;
+                const status = timeSinceLastPing < CONFIG.HEARTBEAT_TIMEOUT ? '✅' : '⚠️';
+                log('Seeds', `  [${index++}] ${status} ${host} (priority: ${conn.priority}, 最終ping: ${Math.floor(timeSinceLastPing / 1000)}秒前)`);
+            }
+        }
+        const primaryHost = findPrimaryHost();
+        const myHost = getMyHost();
+        if (isPrimary) {
+            log('Seeds', `👑 自ノードがプライマリ: ${myHost} (priority: ${myPriority})`);
+        }
+        else {
+            log('Seeds', `📡 プライマリノード: ${primaryHost} (自ノード: ${myHost}, priority: ${myPriority})`);
+        }
+        log('Seeds', `━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    }, 60000);
+    // 初回起動後10秒でレポート実行
+    setTimeout(() => {
+        log('Seeds', `━━━ 初回シード接続状況レポート ━━━`);
+        log('Seeds', `接続済みシード数: ${seedPeers.size}件`);
+        if (seedPeers.size === 0) {
+            log('Seeds', `⚠ まだシードに接続していません`);
+        }
+        else {
+            let index = 1;
+            for (const [host, conn] of seedPeers) {
+                log('Seeds', `  [${index++}] ✅ ${host} (priority: ${conn.priority})`);
+            }
+        }
+        log('Seeds', `━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    }, 10000);
 }
 // ============================================================
 // エントリーポイント ★変更箇所
 // ============================================================
-function main() {
+async function main() {
     console.log('========================================');
     console.log('  BTR (Buturi Coin) Seed Node');
     console.log('========================================');
     trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
     randomManager = new RandomManager();
-    // --- ★ 初回配布対応: latest_update.json が無ければ node.js から自動生成 ---
+    // --- ★ latest_update.json 読み込み（署名付きのみ受け入れ） ---
     const latestCodePath = path.resolve('./latest_update.json');
     if (fs.existsSync(latestCodePath)) {
         try {
@@ -1463,28 +1621,8 @@ function main() {
         }
     }
     else {
-        const nodeJsPath = path.resolve('./node.js');
-        if (fs.existsSync(nodeJsPath)) {
-            try {
-                const code = fs.readFileSync(nodeJsPath, 'utf-8');
-                const hash = createHash('sha256').update(code).digest('hex');
-                latestNodeCode = {
-                    version: '0.0.1',
-                    code,
-                    hash,
-                    signer: '',
-                    signature: '',
-                };
-                fs.writeFileSync(latestCodePath, JSON.stringify(latestNodeCode, null, 2));
-                log('Init', `node.js から初回配布パッケージ自動生成: v0.0.1`);
-            }
-            catch (e) {
-                log('Init', `node.js 読み込み失敗: ${e}`);
-            }
-        }
-        else {
-            log('Init', '⚠ latest_update.json も node.js も見つかりません');
-        }
+        log('Init', '⚠ latest_update.json が見つかりません');
+        log('Init', '管理者パネルからROOT_KEYで署名済みのnode.jsを配信してください');
     }
     // --- ★ ここまで ---
     startTCPServer();
@@ -1493,7 +1631,7 @@ function main() {
     startHeartbeat();
     startSeedHeartbeat();
     startPeriodicTasks();
-    connectToSeeds();
+    await connectToSeeds(); // CDN取得のため非同期化
     log('Init', 'シードノード起動完了');
     log('Init', `ホスト: ${getMyHost()}`);
     log('Init', `ポート: TCP=${CONFIG.TCP_PORT}, WSS=${CONFIG.WSS_PORT}/${CONFIG.WSS_DEV_PORT}, Seed=${CONFIG.SEED_PORT}`);

@@ -220,6 +220,14 @@ function handlePacket(packet: Packet): void {
       }
       break;
       
+    case 'admin_deploy_node_result':
+      if (packet.data.success) {
+        addLog('systemLog', `node.js配信成功: v${packet.data.version} を全ノードに配信しました`, 'success');
+      } else {
+        addLog('systemLog', `node.js配信失敗: ${packet.data.message || '不明なエラー'}`, 'error');
+      }
+      break;
+      
     case 'admin_clear_mempool_result':
       if (packet.data.success) {
         addLog('systemLog', `Mempool全消去成功: ${packet.data.count} 件のトランザクションを削除しました`, 'success');
@@ -739,6 +747,72 @@ if (!address.startsWith('0x') || address.length !== 42) {
   
   send({ type: 'admin_remove_tx', data: { signature } });
   addLog('systemLog', `トランザクション削除リクエスト送信: ${signature.slice(0, 16)}...`, 'info');
+};
+
+// ============================================================
+// node.js配信機能
+// ============================================================
+
+(window as any).deployNodeCode = async function(): Promise<void> {
+  if (!isAuthenticated || adminWallet?.role !== 'root') {
+    addLog('systemLog', 'node.js配信にはroot権限が必要です', 'error');
+    return;
+  }
+  
+  // ★ ROOT_KEY確認
+  const ROOT_KEY: string = '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70';
+  if (adminWallet!.publicKey !== ROOT_KEY) {
+    addLog('systemLog', `⚠️ node.js配信にはROOT_KEYが必要です`, 'error');
+    addLog('systemLog', `現在の公開鍵: ${adminWallet!.publicKey.slice(0, 16)}...`, 'error');
+    addLog('systemLog', `必要な公開鍵: ${ROOT_KEY.slice(0, 16)}...`, 'error');
+    alert('node.js配信にはROOT_KEYの秘密鍵でログインする必要があります。\n\n現在ログイン中の鍵ではnode.jsを配信できません。');
+    return;
+  }
+  
+  const fileInput: HTMLInputElement = document.getElementById('nodeCodeFile') as HTMLInputElement;
+  const versionInput: string = $val('nodeCodeVersion');
+  
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    addLog('systemLog', 'node.jsファイルを選択してください', 'error');
+    return;
+  }
+  
+  if (!versionInput) {
+    addLog('systemLog', 'バージョン番号を入力してください', 'error');
+    return;
+  }
+  
+  const file: File = fileInput.files[0];
+  const code: string = await file.text();
+  
+  addLog('systemLog', `node.js読み込み完了: ${Math.round(code.length / 1024)}KB`, 'info');
+  
+  // SHA-256ハッシュ計算
+  const hash: string = await sha256(code);
+  addLog('systemLog', `ハッシュ計算完了: ${hash.slice(0, 16)}...`, 'info');
+  
+  // Ed25519で署名（ROOT_KEYの秘密鍵で署名）
+  const privateKeyBytes: Uint8Array = hexToBytes(adminWallet!.privateKey);
+  const messageBytes: Uint8Array = new TextEncoder().encode(hash);
+  const signatureBytes: Uint8Array = await Ed25519.sign(messageBytes, privateKeyBytes);
+  const signature: string = bytesToHex(signatureBytes);
+  
+  addLog('systemLog', `ROOT_KEY署名完了: ${signature.slice(0, 16)}...`, 'success');
+  
+  const updatePackage = {
+    version: versionInput,
+    code: code,
+    hash: hash,
+    signer: ROOT_KEY,  // ★ ROOT_KEYを明示的に指定
+    signature: signature
+  };
+  
+  if (!confirm(`node.js v${versionInput} を全ノードに配信しますか？\n\nハッシュ: ${hash.slice(0, 32)}...\nサイズ: ${Math.round(code.length / 1024)}KB\n署名者: ROOT_KEY`)) {
+    return;
+  }
+  
+  send({ type: 'admin_deploy_node', data: updatePackage });
+  addLog('systemLog', `node.js配信リクエスト送信: v${versionInput}`, 'info');
 };
 
 // ============================================================

@@ -140,33 +140,31 @@ function fetchLatestFiles(seeds) {
 // アップデート検証 ★変更箇所
 // ============================================================
 async function verifyUpdate(update, trustedKeys) {
-    // ★ 初回配布（署名なし）はハッシュ検証のみで通す
-    if (!update.signer && !update.signature) {
-        if (sha256(update.code) !== update.hash) {
-            log('アップデート: ハッシュ不一致（初回配布）');
-            return false;
-        }
-        log('アップデート: 初回配布（署名なし）、ハッシュ検証OK');
-        return true;
+    // ★ 必須フィールドチェック
+    if (!update.signer || !update.signature || !update.hash || !update.code) {
+        log('アップデート: 必須フィールドが不足しています');
+        return false;
     }
-    // 通常の検証（署名付き）
-    const signerIsTrusted = update.signer === ROOT_KEY ||
-        trustedKeys.keys.some(k => k.publicKey === update.signer);
-    if (!signerIsTrusted) {
-        log('アップデート: 署名者が信頼されていません');
+    // ★ ROOT_KEYのみで検証（署名なしアップデートは拒否）
+    if (update.signer !== ROOT_KEY) {
+        log('アップデート: 署名者がROOT_KEYではありません');
+        log(`アップデート: signer=${update.signer.slice(0, 16)}..., ROOT_KEY=${ROOT_KEY.slice(0, 16)}...`);
         return false;
     }
     // ハッシュ検証
-    if (sha256(update.code) !== update.hash) {
+    const calculatedHash = sha256(update.code);
+    if (calculatedHash !== update.hash) {
         log('アップデート: ハッシュ不一致');
+        log(`アップデート: 計算値=${calculatedHash.slice(0, 16)}..., 宣言値=${update.hash.slice(0, 16)}...`);
         return false;
     }
-    // Ed25519署名検証
-    const valid = await Ed25519.verify(hexToBytes(update.signature), new TextEncoder().encode(update.hash), hexToBytes(update.signer));
+    // Ed25519署名検証（ROOT_KEYで検証）
+    const valid = await Ed25519.verify(hexToBytes(update.signature), new TextEncoder().encode(update.hash), hexToBytes(ROOT_KEY));
     if (!valid) {
-        log('アップデート: 署名検証失敗');
+        log('アップデート: ROOT_KEY署名検証失敗');
         return false;
     }
+    log('アップデート: ROOT_KEY署名検証成功');
     return true;
 }
 // ============================================================

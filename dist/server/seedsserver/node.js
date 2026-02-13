@@ -459,7 +459,7 @@ const CONFIG = {
     TOKENS_FILE: './tokens.json',
     // ジェネシス設定
     TOTAL_SUPPLY: 5_000_000_000,
-    BLOCK_TIME: 45,
+    BLOCK_TIME: 1,
     BLOCK_REWARD_MIN: 80,
     BLOCK_REWARD_MAX: 120,
     GAS_FEE: 1,
