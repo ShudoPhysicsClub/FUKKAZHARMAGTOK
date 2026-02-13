@@ -518,7 +518,7 @@ class Ed25519 {
 // ============================================================
 
 const CONFIG = {
-  ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
+  ROOT_PUBLIC_KEY: ['04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',],
   TCP_PORT: 5000,
   WSS_PORT: 443,
   WSS_DEV_PORT: 8443,
@@ -1745,7 +1745,7 @@ async function main(): Promise<void> {
   console.log('  BTR (Buturi Coin) Seed Node');
   console.log('========================================');
 
-  trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY);
+  trustManager = new TrustManager(CONFIG.ROOT_PUBLIC_KEY[0]);
   randomManager = new RandomManager();
 
   // --- ★ latest_update.json 読み込み（署名付きのみ受け入れ） ---
