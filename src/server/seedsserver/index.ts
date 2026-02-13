@@ -647,7 +647,9 @@ function loadSeeds(): SeedEntry[] {
 }
 
 function getMyHost(): string {
-  return process.env.SEED_HOST || 'mail.shudo-physics.com';
+  // 環境変数が設定されていない場合は空文字列を返す
+  // これによりローカル実行時は「自ノード」として検出されなくなる
+  return process.env.SEED_HOST || '';
 }
 
 async function connectToSeeds(): Promise<void> {
@@ -665,15 +667,21 @@ async function connectToSeeds(): Promise<void> {
   const myHost = getMyHost();
 
   log('Seeds', `=== シード接続開始: 全${seeds.length}件のシードをポート${CONFIG.SEED_PORT}で試行 ===`);
+  if (myHost) {
+    log('Seeds', `自ノード: ${myHost}`);
+  } else {
+    log('Seeds', `⚠ SEED_HOST環境変数未設定 - すべてのシードに接続を試行します`);
+  }
 
   let connectedCount = 0;
   for (const seed of seeds) {
-    if (seed.host === myHost) {
+    // 自ノードの場合のみスキップ（myHostが空でない、かつ一致する場合）
+    if (myHost && seed.host === myHost) {
       myPriority = seed.priority;
-      log('Seeds', `✓ 自ノードを検出: ${seed.host} (priority: ${myPriority})`);
+      log('Seeds', `✓ 自ノードを検出: ${seed.host} (priority: ${myPriority}) - スキップ`);
       continue;
     }
-    log('Seeds', `→ 接続試行 [${++connectedCount}/${seeds.length - 1}]: ${seed.host}:${CONFIG.SEED_PORT} (priority: ${seed.priority})`);
+    log('Seeds', `→ 接続試行 [${++connectedCount}]: ${seed.host}:${CONFIG.SEED_PORT} (priority: ${seed.priority})`);
     connectToSeed(seed);
   }
   
@@ -1764,7 +1772,12 @@ async function main(): Promise<void> {
   await connectToSeeds();  // CDN取得のため非同期化
 
   log('Init', 'シードノード起動完了');
-  log('Init', `ホスト: ${getMyHost()}`);
+  const myHost = getMyHost();
+  if (myHost) {
+    log('Init', `ホスト: ${myHost}`);
+  } else {
+    log('Init', `⚠ ホスト未設定 (SEED_HOST環境変数なし) - クライアントモードで動作中`);
+  }
   log('Init', `ポート: TCP=${CONFIG.TCP_PORT}, WSS=${CONFIG.WSS_PORT}/${CONFIG.WSS_DEV_PORT}, Seed=${CONFIG.SEED_PORT}`);
 }
 

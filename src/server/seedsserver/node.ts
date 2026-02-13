@@ -6,6 +6,7 @@
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
+import * as fs from 'fs';
 type ExtPoint = [bigint, bigint, bigint, bigint];
 type AffinePoint = [bigint, bigint];
 
@@ -680,6 +681,26 @@ function getAccount(address: string): Account {
   return accounts.get(address)!;
 }
 
+// ★ アカウント保存ヘルパー
+function saveAccount(account: Account): void {
+  try {
+    const filename = `./users/${account.address}.json`;
+    writeFileSync(filename, JSON.stringify(account));
+  } catch (e) {
+    // 保存失敗は無視（定期保存で再試行）
+  }
+}
+
+// ★ トークン保存ヘルパー
+function saveToken(token: TokenInfo): void {
+  try {
+    const filename = `./tokens/${token.address}.json`;
+    writeFileSync(filename, JSON.stringify(token));
+  } catch (e) {
+    // 保存失敗は無視（定期保存で再試行）
+  }
+}
+
 function getTokenBalance(address: string, tokenAddress: string): number {
   const account: Account = getAccount(address);
   return account.tokens[tokenAddress] || 0;
@@ -882,6 +903,7 @@ function applyTransaction(tx: Transaction, minerAddress: string): void {
         distribution: tx.data!.distribution || 'creator',
       };
       tokens.set(tokenAddress, tokenInfo);
+      saveToken(tokenInfo); // ★ トークン即座保存
 
       // 配布
       const creatorAmount: number = totalSupply * (1 - poolRatio);
@@ -911,9 +933,18 @@ function applyTransaction(tx: Transaction, minerAddress: string): void {
       const token: TokenInfo | undefined = tokens.get(tx.token);
       if (token) {
         token.name = tx.data!.newName!;
+        saveToken(token); // ★ トークン即座保存
       }
       break;
     }
+  }
+
+  // ★ 変更されたアカウントを即座保存
+  saveAccount(sender);
+  saveAccount(miner);
+  if (tx.to) {
+    const receiver = getAccount(tx.to);
+    saveAccount(receiver);
   }
 }
 
@@ -1060,6 +1091,14 @@ function applyBlock(block: Block): void {
 
   chain.push(block);
 
+  // ★ 新ブロックを即座にファイル保存
+  try {
+    const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
+    writeFileSync(filename, JSON.stringify(block));
+  } catch (e) {
+    log('Save', `ブロック保存失敗: ${e}`);
+  }
+
   // 難易度調整
   adjustDifficulty();
 
@@ -1148,11 +1187,44 @@ function rebuildState(newChain: Block[]): void {
 
 function saveState(): void {
   try {
-    writeFileSync(CONFIG.CHAIN_FILE, JSON.stringify(chain));
-    const accountsObj: Record<string, Account> = Object.fromEntries(accounts);
-    writeFileSync(CONFIG.ACCOUNTS_FILE, JSON.stringify(accountsObj));
-    const tokensObj: Record<string, TokenInfo> = Object.fromEntries(tokens);
-    writeFileSync(CONFIG.TOKENS_FILE, JSON.stringify(tokensObj));
+    // ディレクトリ作成
+    if (!existsSync('./chain')) {
+      fs.mkdirSync('./chain', { recursive: true });
+    }
+    if (!existsSync('./users')) {
+      fs.mkdirSync('./users', { recursive: true });
+    }
+    if (!existsSync('./tokens')) {
+      fs.mkdirSync('./tokens', { recursive: true });
+    }
+
+    // チェーン保存: 各ブロックを個別ファイルに
+    for (const block of chain) {
+      const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
+      writeFileSync(filename, JSON.stringify(block));
+    }
+
+    // アカウント保存: 各アカウントを個別ファイルに
+    for (const [address, account] of accounts) {
+      const filename = `./users/${address}.json`;
+      writeFileSync(filename, JSON.stringify(account));
+    }
+
+    // トークン保存: 各トークンを個別ファイルに
+    for (const [address, token] of tokens) {
+      const filename = `./tokens/${address}.json`;
+      writeFileSync(filename, JSON.stringify(token));
+    }
+
+    // メタデータ保存
+    const meta = {
+      chainLength: chain.length,
+      accountCount: accounts.size,
+      tokenCount: tokens.size,
+      lastSaved: Date.now()
+    };
+    writeFileSync('./state_meta.json', JSON.stringify(meta, null, 2));
+
   } catch (e: unknown) {
     const msg: string = e instanceof Error ? e.message : String(e);
     log('Save', `保存失敗: ${msg}`);
@@ -1161,15 +1233,60 @@ function saveState(): void {
 
 function loadState(): void {
   try {
-    if (existsSync(CONFIG.CHAIN_FILE)) {
-      const data: Block[] = JSON.parse(readFileSync(CONFIG.CHAIN_FILE, 'utf-8'));
-      rebuildState(data);
-      log('Load', `チェーン読み込み: ${chain.length}ブロック`);
+    // ディレクトリ作成
+    if (!existsSync('./chain')) {
+      fs.mkdirSync('./chain', { recursive: true });
+    }
+    if (!existsSync('./users')) {
+      fs.mkdirSync('./users', { recursive: true });
+    }
+    if (!existsSync('./tokens')) {
+      fs.mkdirSync('./tokens', { recursive: true });
+    }
+
+    // メタデータ読み込み
+    let chainLength = 0;
+    if (existsSync('./state_meta.json')) {
+      const meta = JSON.parse(readFileSync('./state_meta.json', 'utf-8'));
+      chainLength = meta.chainLength || 0;
+    }
+
+    if (chainLength > 0) {
+      // チェーン読み込み: 各ブロックファイルから
+      const blocks: Block[] = [];
+      for (let height = 0; height < chainLength; height++) {
+        const filename = `./chain/${height.toString().padStart(64, '0')}.json`;
+        if (existsSync(filename)) {
+          const block: Block = JSON.parse(readFileSync(filename, 'utf-8'));
+          blocks.push(block);
+        } else {
+          log('Load', `⚠ ブロックファイル欠落: height ${height}`);
+        }
+      }
+      
+      if (blocks.length > 0) {
+        rebuildState(blocks);
+        log('Load', `チェーン読み込み: ${chain.length}ブロック (ファイルベース)`);
+      } else {
+        // ジェネシスブロック
+        const genesis: GenesisBlock = createGenesisBlock();
+        chain.push(genesis);
+        log('Load', 'ジェネシスブロック作成');
+      }
     } else {
-      // ジェネシスブロック
-      const genesis: GenesisBlock = createGenesisBlock();
-      chain.push(genesis);
-      log('Load', 'ジェネシスブロック作成');
+      // 旧形式からの移行チェック
+      if (existsSync(CONFIG.CHAIN_FILE)) {
+        log('Load', '旧形式検出: 移行中...');
+        const data: Block[] = JSON.parse(readFileSync(CONFIG.CHAIN_FILE, 'utf-8'));
+        rebuildState(data);
+        saveState(); // 新形式で保存
+        log('Load', `チェーン移行完了: ${chain.length}ブロック`);
+      } else {
+        // ジェネシスブロック
+        const genesis: GenesisBlock = createGenesisBlock();
+        chain.push(genesis);
+        log('Load', 'ジェネシスブロック作成');
+      }
     }
   } catch (e: unknown) {
     const msg: string = e instanceof Error ? e.message : String(e);
@@ -1212,6 +1329,20 @@ function finishSync(): void {
   isSyncing = false;
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   saveState();
+  
+  // ★ メタデータ更新
+  try {
+    const meta = {
+      chainLength: chain.length,
+      accountCount: accounts.size,
+      tokenCount: tokens.size,
+      lastSaved: Date.now()
+    };
+    writeFileSync('./state_meta.json', JSON.stringify(meta, null, 2));
+  } catch (e) {
+    log('Save', `メタデータ保存失敗: ${e}`);
+  }
+  
   sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
   log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
