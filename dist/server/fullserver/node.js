@@ -719,10 +719,10 @@ function applyTransaction(tx, minerAddress) {
             break;
         }
         case 'create_token': {
-            log('Token', `トークン作成開始 - sender: ${tx.from.slice(0, 10)}..., 残高: ${sender.balance}`);
+            const balanceBefore = sender.balance;
             sender.balance -= CONFIG.TOKEN_CREATION_FEE;
             miner.balance += CONFIG.TOKEN_CREATION_FEE;
-            log('Token', `手数料徴収 - ${CONFIG.TOKEN_CREATION_FEE} BTR, 新残高: ${sender.balance}`);
+            log('Token', `手数料徴収 - sender: ${tx.from.slice(0, 10)}..., ${balanceBefore} → ${sender.balance} BTR (-${CONFIG.TOKEN_CREATION_FEE})`);
             const tokenAddress = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
             const poolRatio = tx.data.poolRatio || 0;
             const totalSupply = tx.data.totalSupply;
