@@ -460,10 +460,10 @@ const CONFIG = {
     TOKENS_FILE: './tokens.json',
     // ジェネシス設定
     TOTAL_SUPPLY: 5_000_000_000,
-    BLOCK_TIME: 1,
-    BLOCK_REWARD_MIN: 80,
-    BLOCK_REWARD_MAX: 120,
-    GAS_FEE: 1,
+    BLOCK_TIME: 180, // 3分
+    BLOCK_REWARD_MIN: 10,
+    BLOCK_REWARD_MAX: 70,
+    GAS_FEE: 0.5,
     TOKEN_CREATION_FEE: 10_000,
     TOKEN_RENAME_FEE: 500,
     TIMESTAMP_TOLERANCE: 10 * 60 * 1000, // ±10分
@@ -782,7 +782,8 @@ function getAMMRate(tokenAddress) {
     const pool = ammPools.get(tokenAddress);
     if (!pool || pool.tokenReserve === 0)
         return 0;
-    return pool.btrReserve / pool.tokenReserve;
+    const baseRate = pool.btrReserve / pool.tokenReserve;
+    return baseRate * 0.97; // 3%手数料を引いた実効レート
 }
 function getFluctuatedRate(tokenAddress, minute) {
     const base = getAMMRate(tokenAddress);
@@ -791,13 +792,14 @@ function getFluctuatedRate(tokenAddress, minute) {
     const seed = sha256(commonRandom + tokenAddress + minute);
     const fluctuation = parseInt(seed.slice(0, 8), 16);
     const change = (fluctuation % 3000 - 1500) / 10000;
-    return base * (1 + change);
+    return base * (1 + change); // 既に3%引かれた値に変動を適用
 }
 function executeSwap(tx) {
     const tokenIn = tx.data.tokenIn;
     const tokenOut = tx.data.tokenOut;
     const amountIn = tx.data.amountIn;
     const sender = getAccount(tx.from);
+    const FEE_RATE = 0.03; // 3%手数料
     if (tokenIn === BTR_ADDRESS) {
         // BTR → Token
         const pool = ammPools.get(tokenOut);
@@ -805,9 +807,12 @@ function executeSwap(tx) {
             return;
         if (sender.balance < amountIn)
             return;
+        // 3%手数料を差し引く
+        const fee = amountIn * FEE_RATE;
+        const amountInAfterFee = amountIn - fee;
         sender.balance -= amountIn;
-        const amountOut = (amountIn * pool.tokenReserve) / (pool.btrReserve + amountIn);
-        pool.btrReserve += amountIn;
+        const amountOut = (amountInAfterFee * pool.tokenReserve) / (pool.btrReserve + amountInAfterFee);
+        pool.btrReserve += amountIn; // 手数料込みでプールに追加
         pool.tokenReserve -= amountOut;
         sender.tokens[tokenOut] = (sender.tokens[tokenOut] || 0) + amountOut;
     }
@@ -819,9 +824,12 @@ function executeSwap(tx) {
         const senderBal = sender.tokens[tokenIn] || 0;
         if (senderBal < amountIn)
             return;
+        // 3%手数料を差し引く
+        const fee = amountIn * FEE_RATE;
+        const amountInAfterFee = amountIn - fee;
         sender.tokens[tokenIn] = senderBal - amountIn;
-        const amountOut = (amountIn * pool.btrReserve) / (pool.tokenReserve + amountIn);
-        pool.tokenReserve += amountIn;
+        const amountOut = (amountInAfterFee * pool.btrReserve) / (pool.tokenReserve + amountInAfterFee);
+        pool.tokenReserve += amountIn; // 手数料込みでプールに追加
         pool.btrReserve -= amountOut;
         sender.balance += amountOut;
     }
@@ -834,14 +842,20 @@ function executeSwap(tx) {
         const senderBal = sender.tokens[tokenIn] || 0;
         if (senderBal < amountIn)
             return;
+        // 3%手数料を差し引く（TokenA側）
+        const feeA = amountIn * FEE_RATE;
+        const amountInAfterFee = amountIn - feeA;
         sender.tokens[tokenIn] = senderBal - amountIn;
         // TokenA → BTR
-        const btrAmount = (amountIn * poolA.btrReserve) / (poolA.tokenReserve + amountIn);
-        poolA.tokenReserve += amountIn;
+        const btrAmount = (amountInAfterFee * poolA.btrReserve) / (poolA.tokenReserve + amountInAfterFee);
+        poolA.tokenReserve += amountIn; // 手数料込みでプールに追加
         poolA.btrReserve -= btrAmount;
+        // 3%手数料を差し引く（BTR側）
+        const feeB = btrAmount * FEE_RATE;
+        const btrAmountAfterFee = btrAmount - feeB;
         // BTR → TokenB
-        const amountOut = (btrAmount * poolB.tokenReserve) / (poolB.btrReserve + btrAmount);
-        poolB.btrReserve += btrAmount;
+        const amountOut = (btrAmountAfterFee * poolB.tokenReserve) / (poolB.btrReserve + btrAmountAfterFee);
+        poolB.btrReserve += btrAmount; // 手数料込みでプールに追加
         poolB.tokenReserve -= amountOut;
         sender.tokens[tokenOut] = (sender.tokens[tokenOut] || 0) + amountOut;
     }
