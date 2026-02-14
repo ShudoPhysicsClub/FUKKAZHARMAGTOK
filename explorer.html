@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTR Explorer - ブロックチェーン エクスプローラー</title>
+<style>
+:root {
+  --bg: #0a0e1a;
+  --bg2: #141824;
+  --bg3: #1e2331;
+  --text: #e8eaed;
+  --text2: #9aa0a6;
+  --accent: #4ade80;
+  --border: #2d3748;
+  --red: #ef4444;
+  --mono: 'Courier New', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+header {
+  background: var(--bg2);
+  border-bottom: 2px solid var(--accent);
+  padding: 20px;
+  margin-bottom: 30px;
+}
+
+h1 {
+  color: var(--accent);
+  font-size: 32px;
+  margin-bottom: 10px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.stat-card {
+  background: var(--bg2);
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.stat-label {
+  color: var(--text2);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  color: var(--accent);
+  font-size: 24px;
+  font-weight: bold;
+  font-family: var(--mono);
+}
+
+.search {
+  margin-bottom: 30px;
+}
+
+.search input {
+  width: 100%;
+  padding: 15px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 16px;
+  font-family: var(--mono);
+}
+
+.search input::placeholder {
+  color: var(--text2);
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  border-bottom: 2px solid var(--border);
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--text2);
+  padding: 15px 25px;
+  cursor: pointer;
+  font-size: 16px;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s;
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.panel {
+  display: none;
+}
+
+.panel.active {
+  display: block;
+}
+
+.list {
+  background: var(--bg2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.list-item {
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.list-item:hover {
+  background: var(--bg3);
+}
+
+.list-item:last-child {
+  border-bottom: none;
+}
+
+.item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.item-title {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--accent);
+}
+
+.item-time {
+  color: var(--text2);
+  font-size: 14px;
+}
+
+.item-details {
+  color: var(--text2);
+  font-size: 14px;
+  font-family: var(--mono);
+}
+
+.hash {
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.address {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.address:hover {
+  color: #5ef490;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text2);
+}
+
+.detail-view {
+  background: var(--bg2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 30px;
+}
+
+.detail-section {
+  margin-bottom: 25px;
+}
+
+.detail-label {
+  color: var(--text2);
+  font-size: 14px;
+  margin-bottom: 5px;
+}
+
+.detail-value {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 16px;
+  word-break: break-all;
+}
+
+.back-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.back-btn:hover {
+  background: var(--border);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+th {
+  background: var(--bg3);
+  color: var(--text2);
+  padding: 12px;
+  text-align: left;
+  font-weight: normal;
+}
+
+td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.status-success {
+  background: rgba(74, 222, 128, 0.2);
+  color: var(--accent);
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BTR Explorer</h1>
+  <div style="color: var(--text2); margin-top: 5px;">ブロックチェーン エクスプローラー</div>
+</header>
+
+<div class="container">
+  <!-- 統計情報 -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">チェーン高さ</div>
+      <div class="stat-value" id="statHeight">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">アカウント数</div>
+      <div class="stat-value" id="statAccounts">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pending Tx</div>
+      <div class="stat-value" id="statPending">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">発行済BTR</div>
+      <div class="stat-value" id="statSupply">-</div>
+    </div>
+  </div>
+
+  <!-- 検索 -->
+  <div class="search">
+    <input type="text" id="searchInput" placeholder="アドレス、ブロック高さ、トランザクションハッシュで検索...">
+  </div>
+
+  <!-- タブ -->
+  <div class="tabs">
+    <button class="tab active" data-panel="blocks">ブロック</button>
+    <button class="tab" data-panel="transactions">トランザクション</button>
+    <button class="tab" data-panel="accounts">アカウント</button>
+    <button class="tab" data-panel="mempool">メモリプール</button>
+  </div>
+
+  <!-- ブロック一覧 -->
+  <div class="panel active" id="panel-blocks">
+    <div class="list" id="blockList">
+      <div class="loading">読み込み中...</div>
+    </div>
+  </div>
+
+  <!-- トランザクション一覧 -->
+  <div class="panel" id="panel-transactions">
+    <div class="list" id="txList">
+      <div class="loading">読み込み中...</div>
+    </div>
+  </div>
+
+  <!-- アカウント一覧 -->
+  <div class="panel" id="panel-accounts">
+    <div class="list" id="accountList">
+      <div class="loading">読み込み中...</div>
+    </div>
+  </div>
+
+  <!-- メモリプール -->
+  <div class="panel" id="panel-mempool">
+    <div class="list" id="mempoolList">
+      <div class="loading">読み込み中...</div>
+    </div>
+  </div>
+
+  <!-- 詳細表示エリア -->
+  <div id="detailArea" style="display: none;">
+    <button class="back-btn" onclick="closeDetail()">← 戻る</button>
+    <div class="detail-view" id="detailContent"></div>
+  </div>
+</div>
+
+<script src="explorer.js"></script>
+
+</body>
+</html>

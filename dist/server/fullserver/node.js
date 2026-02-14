@@ -697,9 +697,12 @@ async function verifyTransaction(tx) {
 function applyTransaction(tx, minerAddress) {
     const sender = getAccount(tx.from);
     const miner = getAccount(minerAddress);
-    // ガス代
-    sender.balance -= tx.fee;
-    miner.balance += tx.fee;
+    const isSelfMining = (tx.from === minerAddress);
+    // ガス代（自己マイニングの場合は相殺されるので何もしない）
+    if (!isSelfMining) {
+        sender.balance -= tx.fee;
+        miner.balance += tx.fee;
+    }
     sender.nonce++;
     switch (tx.type) {
         case 'transfer': {
@@ -719,10 +722,10 @@ function applyTransaction(tx, minerAddress) {
             break;
         }
         case 'create_token': {
-            const balanceBefore = sender.balance;
             sender.balance -= CONFIG.TOKEN_CREATION_FEE;
-            miner.balance += CONFIG.TOKEN_CREATION_FEE;
-            log('Token', `手数料徴収 - sender: ${tx.from.slice(0, 10)}..., ${balanceBefore} → ${sender.balance} BTR (-${CONFIG.TOKEN_CREATION_FEE})`);
+            if (!isSelfMining) {
+                miner.balance += CONFIG.TOKEN_CREATION_FEE;
+            }
             const tokenAddress = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
             const poolRatio = tx.data.poolRatio || 0;
             const totalSupply = tx.data.totalSupply;
@@ -738,7 +741,6 @@ function applyTransaction(tx, minerAddress) {
                 distribution: tx.data.distribution || 'creator',
             };
             tokens.set(tokenAddress, tokenInfo);
-            saveToken(tokenInfo); // ★ トークン即座保存
             // 配布
             const creatorAmount = totalSupply * (1 - poolRatio);
             const poolAmount = totalSupply * poolRatio;
@@ -761,22 +763,17 @@ function applyTransaction(tx, minerAddress) {
         }
         case 'rename_token': {
             sender.balance -= CONFIG.TOKEN_RENAME_FEE;
-            miner.balance += CONFIG.TOKEN_RENAME_FEE;
+            if (!isSelfMining) {
+                miner.balance += CONFIG.TOKEN_RENAME_FEE;
+            }
             const token = tokens.get(tx.token);
             if (token) {
                 token.name = tx.data.newName;
-                saveToken(token); // ★ トークン即座保存
             }
             break;
         }
     }
-    // ★ 変更されたアカウントを即座保存
-    saveAccount(sender);
-    saveAccount(miner);
-    if (tx.to) {
-        const receiver = getAccount(tx.to);
-        saveAccount(receiver);
-    }
+    // アカウント保存はsaveState()で一括処理
 }
 // ============================================================
 // AMM
@@ -927,6 +924,7 @@ function applyBlock(block) {
     const remaining = pendingTxs.filter(tx => !txSigs.has(tx.signature));
     pendingTxs.length = 0;
     pendingTxs.push(...remaining);
+    // saveState()は呼ばない（定期保存のみ）
 }
 // ============================================================
 // 難易度調整
@@ -980,7 +978,7 @@ function selectChain(otherChain) {
     rebuildState(otherChain);
     return true;
 }
-function rebuildState(newChain) {
+function rebuildState(newChain, silent = true) {
     // 全リセット
     chain.length = 0;
     accounts.clear();
@@ -988,11 +986,18 @@ function rebuildState(newChain) {
     ammPools.clear();
     totalMined = 0;
     currentDifficulty = 1;
-    // 再適用
+    // 再適用（サイレントモード）
+    const originalApplyBlock = applyBlock;
+    if (silent) {
+        // サイレントモード: ログを抑制
+        globalThis.__rebuildingSilent = true;
+    }
     for (const block of newChain) {
         applyBlock(block);
     }
-    log('Chain', `状態再構築完了: ${chain.length}ブロック`);
+    if (silent) {
+        delete globalThis.__rebuildingSilent;
+    }
 }
 // ============================================================
 // 永続化
