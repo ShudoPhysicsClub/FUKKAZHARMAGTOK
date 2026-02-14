@@ -603,39 +603,175 @@ function updateMiningTokenSelect(): void {
 // マイニング (Web Worker)
 // ============================================================
 
+// 修正版: 進捗報告を「時間ベース」に変更し、フリーズを回避
 const MINE_WORKER_CODE: string = `
 self.onmessage = function(e) {
   const { previousHash, timestamp, miner, transactions, difficulty, reward, startNonce } = e.data;
-  const txStr = JSON.stringify(transactions);
-  const prefix = '0'.repeat(difficulty);
+
+  // 1. ループ外で不変部分をバイト列化
+  const enc = new TextEncoder();
+  const headStr = previousHash + timestamp.toString();
+  const tailStr = difficulty.toString() + miner + reward.toString() + JSON.stringify(transactions);
+  
+  const head = enc.encode(headStr);
+  const tail = enc.encode(tailStr);
+
+  // 2. メモリ確保
+  const MAX_NONCE_DIGITS = 24;
+  const totalMaxLen = head.length + MAX_NONCE_DIGITS + tail.length + 64;
+  const buffer = new Uint8Array(totalMaxLen);
+  
+  buffer.set(head, 0);
+  const nonceOffset = head.length;
+
+  const K = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]);
+
+  const W = new Uint32Array(64);
   let nonce = startNonce;
   let hashCount = 0;
-  function sha256sync(str) {
-    const K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
-    const rotr=(x,n)=>(x>>>n)|(x<<(32-n));
-    let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
-    const data=new TextEncoder().encode(str);
-    const len=data.length;const bitLen=len*8;
-    const padLen=len+1+8;const blockCount=Math.ceil(padLen/64);
-    const blocks=new Uint8Array(blockCount*64);blocks.set(data);blocks[len]=0x80;
-    const view=new DataView(blocks.buffer);
-    view.setUint32(blocks.length-8,0,false);view.setUint32(blocks.length-4,bitLen,false);
-    for(let i=0;i<blocks.length;i+=64){
-      const W=new Uint32Array(64);
-      for(let t=0;t<16;t++)W[t]=view.getUint32(i+t*4,false);
-      for(let t=16;t<64;t++){const s0=rotr(W[t-15],7)^rotr(W[t-15],18)^(W[t-15]>>>3);const s1=rotr(W[t-2],17)^rotr(W[t-2],19)^(W[t-2]>>>10);W[t]=(W[t-16]+s0+W[t-7]+s1)>>>0;}
-      let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
-      for(let t=0;t<64;t++){const S1=rotr(e,6)^rotr(e,11)^rotr(e,25);const ch=(e&f)^(~e&g);const t1=(h+S1+ch+K[t]+W[t])>>>0;const S0=rotr(a,2)^rotr(a,13)^rotr(a,22);const maj=(a&b)^(a&c)^(b&c);const t2=(S0+maj)>>>0;h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
-      h0=(h0+a)>>>0;h1=(h1+b)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+h)>>>0;
+  let currentNonceDigits = 0;
+  
+  const diff = difficulty; 
+  
+  // ★追加: 最終報告時間の記録
+  let lastReportTime = Date.now();
+
+  while (true) {
+    // --- 1. Nonceの更新 ---
+    let n = nonce;
+    let digits = 0;
+    
+    if (n === 0) {
+      digits = 1;
+      buffer[nonceOffset] = 48; 
+    } else {
+      let temp = n;
+      while (temp >= 10) { digits++; temp = (temp / 10) | 0; }
+      digits++;
+      temp = n;
+      for (let i = digits - 1; i >= 0; i--) {
+        buffer[nonceOffset + i] = 48 + (temp % 10);
+        temp = (temp / 10) | 0;
+      }
     }
-    return[h0,h1,h2,h3,h4,h5,h6,h7].map(x=>x.toString(16).padStart(8,'0')).join('');
-  }
-  while(true){
-    const input=previousHash+timestamp+nonce+difficulty+miner+reward+txStr;
-    const hash=sha256sync(input);
-    if(hash.startsWith(prefix)){self.postMessage({type:'found',nonce,hash,hashCount});return;}
-    nonce++;hashCount++;
-    if(hashCount%5000===0)self.postMessage({type:'progress',hashCount,nonce});
+
+    if (digits !== currentNonceDigits) {
+      buffer.set(tail, nonceOffset + digits);
+      currentNonceDigits = digits;
+    }
+
+    // --- 2. Padding ---
+    const dataLen = head.length + digits + tail.length;
+    let padPos = dataLen;
+    buffer[padPos++] = 0x80;
+    
+    let zeroPadLen = (56 - (padPos % 64));
+    if (zeroPadLen < 0) zeroPadLen += 64;
+    
+    // ※最適化: 前回と同じ長さならfill不要だが安全策で最小限fill
+    // buffer.fill(0, padPos, padPos + zeroPadLen + 8); 
+    // さらに高速化するなら、tail更新時以外はpadding変化なしなので省略可能だが、
+    // ここでは安全のため view.setUint32 だけ行う
+    const totalBits = dataLen * 8;
+    const endPos = padPos + zeroPadLen;
+    
+    const view = new DataView(buffer.buffer);
+    // 0埋め (前回のゴミ掃除)
+    if (endPos > padPos) {
+       // ループで0埋めするよりsetUint32等を並べる方が速いケースもあるが
+       // ここは標準のfillで十分
+       buffer.fill(0, padPos, endPos);
+    }
+
+    view.setUint32(endPos, 0, false);
+    view.setUint32(endPos + 4, totalBits, false);
+    
+    const blockCount = (endPos + 8) / 64;
+
+    // --- 3. SHA-256 Core ---
+    let h0=0x6a09e667, h1=0xbb67ae85, h2=0x3c6ef372, h3=0xa54ff53a, h4=0x510e527f, h5=0x9b05688c, h6=0x1f83d9ab, h7=0x5be0cd19;
+
+    for (let i = 0; i < blockCount; i++) {
+      const offset = i * 64;
+      for (let t = 0; t < 16; t++) {
+        W[t] = view.getUint32(offset + t * 4, false);
+      }
+      for (let t = 16; t < 64; t++) {
+        const wt15 = W[t-15];
+        const s0 = ((wt15 >>> 7) | (wt15 << 25)) ^ ((wt15 >>> 18) | (wt15 << 14)) ^ (wt15 >>> 3);
+        const wt2 = W[t-2];
+        const s1 = ((wt2 >>> 17) | (wt2 << 15)) ^ ((wt2 >>> 19) | (wt2 << 13)) ^ (wt2 >>> 10);
+        W[t] = (W[t-16] + s0 + W[t-7] + s1) | 0;
+      }
+
+      let a=h0, b=h1, c=h2, d=h3, e=h4, f=h5, g=h6, h=h7;
+      for (let t = 0; t < 64; t++) {
+        const e_rot6 = (e >>> 6) | (e << 26);
+        const e_rot11 = (e >>> 11) | (e << 21);
+        const e_rot25 = (e >>> 25) | (e << 7);
+        const S1 = e_rot6 ^ e_rot11 ^ e_rot25;
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
+        const a_rot2 = (a >>> 2) | (a << 30);
+        const a_rot13 = (a >>> 13) | (a << 19);
+        const a_rot22 = (a >>> 22) | (a << 10);
+        const S0 = a_rot2 ^ a_rot13 ^ a_rot22;
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (S0 + maj) | 0;
+        h = g; g = f; f = e; e = (d + temp1) | 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+      }
+      h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+      h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+    }
+
+    // --- 4. 判定 ---
+    let found = false;
+    if (diff <= 8) {
+      const shift = 32 - (diff * 4);
+      if ((h0 >>> shift) === 0) found = true;
+    } else if (diff <= 16) {
+      if (h0 === 0) {
+        const shift = 32 - ((diff - 8) * 4);
+        if ((h1 >>> shift) === 0) found = true;
+      }
+    } else {
+      if (h0 === 0 && h1 === 0) {
+        const shift = 32 - ((diff - 16) * 4);
+        if ((h2 >>> shift) === 0) found = true;
+      }
+    }
+
+    if (found) {
+      const hashHex = [h0, h1, h2, h3, h4, h5, h6, h7]
+        .map(x => (x >>> 0).toString(16).padStart(8, '0'))
+        .join('');
+      
+      const prefix = '0'.repeat(difficulty);
+      if (hashHex.startsWith(prefix)) {
+        self.postMessage({ type: 'found', nonce, hash: hashHex, hashCount });
+        return;
+      }
+    }
+
+    nonce++;
+    hashCount++;
+    
+    // --- ★修正: 5000回ごとではなく「1秒ごと」に報告 ---
+    const now = Date.now();
+    if (now - lastReportTime >= 1000) {
+      self.postMessage({ type: 'progress', hashCount, nonce });
+      lastReportTime = now;
+    }
   }
 };
 `;
@@ -684,12 +820,14 @@ function startMineWorker(): void {
 
   addLog('miningLog', `掘り始め: #${block.height} diff=${currentDifficulty} tx=${block.transactions.length} prev=${latestBlockHash.slice(0, 12)}...`, 'info');
 
+  // Blob作成用のWorkerコード文字列を使用
   const blob: Blob = new Blob([MINE_WORKER_CODE], { type: 'application/javascript' });
   const url: string = URL.createObjectURL(blob);
   mineWorker = new Worker(url);
 
   mineWorker.onmessage = (e: MessageEvent): void => {
     if (e.data.type === 'progress') {
+      // Workerからの報告回数が減ったので、表示の更新も1秒に1回になります（これでUIは軽くなる）
       totalHashes = e.data.hashCount;
       const elapsed: number = (Date.now() - miningStartTime) / 1000;
       const rate: number = Math.floor(totalHashes / elapsed);
@@ -703,9 +841,8 @@ function startMineWorker(): void {
       chainHeight++;
       send({ type: 'mine', data: minedBlock });
       URL.revokeObjectURL(url);
-      mineWorker = null;  // Worker終了を明示
+      mineWorker = null;
       addLog('miningLog', 'block_accepted待ち...', 'info');
-      // block_accepted が来たら startMineWorker が呼ばれる
     }
   };
 
