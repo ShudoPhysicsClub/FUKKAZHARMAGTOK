@@ -671,7 +671,7 @@ function toggleMining(): void {
 function startMining(): void {
   if (!wallet) return;
   isMining = true;
-  $('btnMine').textContent = '⏸ マイニング停止';
+  $('btnMine').textContent = 'マイニング停止';
   addLog('miningLog', 'マイニング開始', 'success');
   const select = document.getElementById('miningTarget') as HTMLSelectElement;
   miningTargetToken = select ? select.value : '';
@@ -688,7 +688,7 @@ function stopMining(): void {
     clearInterval((window as any).__hashRateTimer);
     (window as any).__hashRateTimer = null;
   }
-  $('btnMine').textContent = '▶ マイニング開始';
+  $('btnMine').textContent = 'マイニング開始';
   $('hashRate').textContent = '0 H/s';
   addLog('miningLog', 'マイニング停止', 'info');
 }
