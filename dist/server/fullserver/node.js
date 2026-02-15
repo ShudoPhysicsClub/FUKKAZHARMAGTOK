@@ -243,8 +243,8 @@ const DELIMITER = '\nLINE_BREAK\n';
 const BTR_ADDRESS = '0x0000000000000000';
 const WEI_PER_BTR = 1000000000000000000n; // 10^18
 const CONFIG = {
-    SEED_HOST: 'mail.shudo-physics.com',
     SEED_PORT: 5000,
+    CDN_SEEDS_URL: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json',
     CHAIN_FILE: './chain.json',
     ACCOUNTS_FILE: './accounts.json',
     TOKENS_FILE: './tokens.json',
@@ -976,14 +976,60 @@ function finishSync() {
     log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
 // ============================================================
-// シードノード接続
+// シードノード接続（seeds.json ベース、優先度順）
 // ============================================================
 let seedSocket = null;
 let seedBuffer = '';
-function connectToSeed() {
-    log('Net', `シードノードに接続中: ${CONFIG.SEED_HOST}:${CONFIG.SEED_PORT}`);
-    seedSocket = connect(CONFIG.SEED_PORT, CONFIG.SEED_HOST, () => {
-        log('Net', '接続成功');
+let currentSeedHost = '';
+let lastSeedsHash = '';
+function loadSeeds() {
+    try {
+        if (existsSync('./seeds.json')) {
+            const data = JSON.parse(readFileSync('./seeds.json', 'utf-8'));
+            const seeds = data.seeds || [];
+            return seeds.sort((a, b) => a.priority - b.priority);
+        }
+    }
+    catch (e) {
+        log('Net', `seeds.json 読み込み失敗: ${e}`);
+    }
+    // フォールバック
+    return [{ host: 'mail.shudo-physics.com', priority: 1, publicKey: '' }];
+}
+async function checkSeedsUpdate() {
+    try {
+        log('Net', 'CDN seeds.json チェック中...');
+        const res = await fetch(CONFIG.CDN_SEEDS_URL);
+        if (!res.ok)
+            return;
+        const text = await res.text();
+        const hash = sha256(text);
+        if (!lastSeedsHash) {
+            lastSeedsHash = hash;
+            return;
+        }
+        if (hash !== lastSeedsHash) {
+            log('Net', 'seeds.json 更新検出、保存して再接続');
+            writeFileSync('./seeds.json', text);
+            lastSeedsHash = hash;
+        }
+    }
+    catch {
+        // ネットワーク不通なら無視
+    }
+}
+function connectToSeed(seedIndex = 0) {
+    const seeds = loadSeeds();
+    if (seedIndex >= seeds.length) {
+        log('Net', '全シードノード接続失敗、5秒後にリトライ');
+        setTimeout(() => connectToSeed(0), 5000);
+        return;
+    }
+    const seed = seeds[seedIndex];
+    currentSeedHost = seed.host;
+    log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (優先度${seed.priority})`);
+    seedSocket = connect(CONFIG.SEED_PORT, seed.host, () => {
+        log('Net', `接続成功: ${seed.host}`);
         sendToSeed({
             type: 'register',
             data: { chainHeight: chain.length, difficulty: currentDifficulty }
@@ -1006,12 +1052,19 @@ function connectToSeed() {
         }
     });
     seedSocket.on('close', () => {
-        log('Net', 'シードノード切断、3秒後に再接続');
+        log('Net', `シードノード切断 (${currentSeedHost})`);
         seedSocket = null;
-        setTimeout(connectToSeed, 3000);
+        // 切断時にCDNチェック
+        checkSeedsUpdate().then(() => {
+            log('Net', '3秒後に再接続...');
+            setTimeout(() => connectToSeed(0), 3000);
+        });
     });
     seedSocket.on('error', (err) => {
-        log('Net', `接続エラー: ${err.message}`);
+        log('Net', `接続エラー (${seed.host}): ${err.message}`);
+        seedSocket = null;
+        // 次のシードを試す
+        connectToSeed(seedIndex + 1);
     });
 }
 function sendToSeed(packet) {
@@ -1407,15 +1460,24 @@ function startPeriodicTasks() {
 // ============================================================
 function main() {
     console.log('========================================');
-    console.log('  BTR (Buturi Coin) Full Node');
+    console.log('  BTR (Buturi Coin) Full Node v2.0.1');
     console.log('  BigInt Edition (Wei = 10^18)');
     console.log('========================================');
     loadState();
+    // 初回seeds.jsonハッシュ記録
+    try {
+        if (existsSync('./seeds.json')) {
+            lastSeedsHash = sha256(readFileSync('./seeds.json', 'utf-8'));
+        }
+    }
+    catch { }
     connectToSeed();
     startPeriodicTasks();
     resetDifficultyDropTimer();
-    log('Init', 'フルノード起動完了 (BigInt版)');
+    const seeds = loadSeeds();
+    log('Init', `フルノード起動完了 (BigInt版)`);
     log('Init', `チェーン高さ: ${chain.length}, 難易度: ${currentDifficulty}`);
+    log('Init', `シードノード: ${seeds.length}件 (${seeds.map(s => s.host).join(', ')})`);
 }
 main();
 //# sourceMappingURL=node.js.map
