@@ -3,7 +3,10 @@
 // ランチャーからforkされて動く
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
-
+//TODO - 署名検証のエラーを詳細化
+//TODO - トランザクションのエラー理由をクライアントに返す
+//TODO - そもそもブロック承認されないことを修正する
+//TODO - 難易度がクライアントにブローキャストされるようにする
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
