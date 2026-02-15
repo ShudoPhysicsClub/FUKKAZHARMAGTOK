@@ -250,11 +250,11 @@ const CONFIG = {
     TOKENS_FILE: './tokens.json',
     // ジェネシス設定
     TOTAL_SUPPLY: (5000000000n * WEI_PER_BTR).toString(), // 5B BTR in Wei
-    BLOCK_TIME: 30,
-    BLOCK_REWARD_MIN: (80n * WEI_PER_BTR).toString(), // 80 BTR
-    BLOCK_REWARD_MAX: (120n * WEI_PER_BTR).toString(), // 120 BTR
+    BLOCK_TIME: 180,
+    BLOCK_REWARD_MIN: (20n * WEI_PER_BTR).toString(), // 20 BTR
+    BLOCK_REWARD_MAX: (70n * WEI_PER_BTR).toString(), // 70 BTR
     GAS_FEE: (1n * WEI_PER_BTR).toString(), // 1 BTR
-    TOKEN_CREATION_FEE: (10000n * WEI_PER_BTR).toString(), // 10,000 BTR
+    TOKEN_CREATION_FEE: (500n * WEI_PER_BTR).toString(), // 500 BTR
     TOKEN_RENAME_FEE: (500n * WEI_PER_BTR).toString(), // 500 BTR
     TIMESTAMP_TOLERANCE: 10 * 60 * 1000,
     MAX_BLOCK_SIZE: 3 * 1024 * 1024,
@@ -348,7 +348,6 @@ const pendingTxs = [];
 let commonRandom = '';
 let totalMined = "0"; // Wei文字列
 let currentDifficulty = 1;
-let difficultyDropTimer = null;
 // ============================================================
 // アカウント管理
 // ============================================================
@@ -770,49 +769,50 @@ function adjustDifficulty() {
     }
 }
 // ============================================================
-// タイマーベース難易度自動降下
-// ブロックが BLOCK_TIME * 1.5 以内に掘れなかったら難易度-1
+// 難易度タイマー降下（ブロックが掘れない時に自動で難易度を下げる）
+// BLOCK_TIME × 1.5 経過ごとに難易度 -1
 // ============================================================
+let difficultyDropTimer = null;
 function resetDifficultyDropTimer() {
     if (difficultyDropTimer)
         clearTimeout(difficultyDropTimer);
-    const dropIntervalMs = CONFIG.BLOCK_TIME * 1000 * 1.5;
-    function scheduleDrop() {
+    const dropInterval = CONFIG.BLOCK_TIME * 1.5 * 1000; // 3分 × 1.5 = 4.5分
+    const scheduleNext = () => {
         difficultyDropTimer = setTimeout(() => {
-            if (currentDifficulty <= 1) {
-                scheduleDrop(); // 難易度1なら下げないが、監視は続ける
-                return;
+            if (currentDifficulty > 1) {
+                currentDifficulty--;
+                log('Difficulty', `タイマー降下: diff=${currentDifficulty} (${CONFIG.BLOCK_TIME * 1.5}秒間ブロックなし)`);
+                // クライアントに通知
+                sendToSeed({
+                    type: 'difficulty_update',
+                    data: {
+                        difficulty: currentDifficulty,
+                        height: chain.length,
+                        previousHash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
+                        reward: calculateReward(chain.length),
+                    }
+                });
             }
-            currentDifficulty--;
-            log('Difficulty', `難易度タイマー降下: ${currentDifficulty} (${(dropIntervalMs / 1000).toFixed(0)}秒ブロックなし)`);
-            // 全クライアントに新しい難易度を通知
-            const latestHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
-            sendToSeed({
-                type: 'difficulty_update',
-                data: {
-                    difficulty: currentDifficulty,
-                    height: chain.length,
-                    previousHash: latestHash,
-                    reward: calculateReward(chain.length),
-                }
-            });
-            scheduleDrop(); // さらに下がる可能性があるので再スケジュール
-        }, dropIntervalMs);
-    }
-    scheduleDrop();
+            // まだ1より大きければ再スケジュール
+            if (currentDifficulty > 1) {
+                scheduleNext();
+            }
+        }, dropInterval);
+    };
+    scheduleNext();
 }
 // ============================================================
 // ブロック報酬算出
 // ============================================================
 function calculateReward(height) {
     if (!commonRandom)
-        return (100n * WEI_PER_BTR).toString(); // 100 BTR default
+        return (45n * WEI_PER_BTR).toString(); // 45 BTR default
     if (compareWei(totalMined, CONFIG.TOTAL_SUPPLY) >= 0)
         return "0";
     const seed = sha256(commonRandom + 'BTR_REWARD' + height);
     const value = parseInt(seed.slice(0, 8), 16);
-    const range = 120 - 80 + 1;
-    const rewardBtr = 80 + (value % range);
+    const range = 70 - 20 + 1;
+    const rewardBtr = 20 + (value % range);
     const rewardWei = (BigInt(rewardBtr) * WEI_PER_BTR).toString();
     const remaining = subWei(CONFIG.TOTAL_SUPPLY, totalMined);
     return compareWei(rewardWei, remaining) <= 0 ? rewardWei : remaining;

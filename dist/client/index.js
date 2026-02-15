@@ -1013,7 +1013,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
       <label>名前</label><input type="text" id="tokenName" placeholder="PhysicsCoin">
       <label>総供給量</label><input type="number" id="tokenSupply" placeholder="1000000" min="1">
       <div style="font-family:var(--mono);font-size:11px;color:var(--accent);margin-bottom:12px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">発行トークンは全量AMMプールに投入されます</div>
-      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">作成費: 10,000 BTR + ガス代 1 BTR</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">作成費: 500 BTR + ガス代 1 BTR</div>
       <button class="btn" id="btnCreateToken">トークン作成</button>
     </div>
   </div>
