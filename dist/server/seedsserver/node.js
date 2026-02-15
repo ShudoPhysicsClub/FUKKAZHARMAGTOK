@@ -348,6 +348,7 @@ const pendingTxs = [];
 let commonRandom = '';
 let totalMined = "0"; // Wei文字列
 let currentDifficulty = 1;
+let difficultyDropTimer = null;
 // ============================================================
 // アカウント管理
 // ============================================================
@@ -742,6 +743,7 @@ function applyBlock(block) {
         log('Save', `ブロック保存失敗: ${e}`);
     }
     adjustDifficulty();
+    resetDifficultyDropTimer();
     // pending から適用済みTxを除去
     const txSigs = new Set(block.transactions.map(tx => tx.signature));
     const remaining = pendingTxs.filter(tx => !txSigs.has(tx.signature));
@@ -766,6 +768,38 @@ function adjustDifficulty() {
         currentDifficulty--;
         log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
     }
+}
+// ============================================================
+// タイマーベース難易度自動降下
+// ブロックが BLOCK_TIME * 1.5 以内に掘れなかったら難易度-1
+// ============================================================
+function resetDifficultyDropTimer() {
+    if (difficultyDropTimer)
+        clearTimeout(difficultyDropTimer);
+    const dropIntervalMs = CONFIG.BLOCK_TIME * 1000 * 1.5;
+    function scheduleDrop() {
+        difficultyDropTimer = setTimeout(() => {
+            if (currentDifficulty <= 1) {
+                scheduleDrop(); // 難易度1なら下げないが、監視は続ける
+                return;
+            }
+            currentDifficulty--;
+            log('Difficulty', `難易度タイマー降下: ${currentDifficulty} (${(dropIntervalMs / 1000).toFixed(0)}秒ブロックなし)`);
+            // 全クライアントに新しい難易度を通知
+            const latestHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
+            sendToSeed({
+                type: 'difficulty_update',
+                data: {
+                    difficulty: currentDifficulty,
+                    height: chain.length,
+                    previousHash: latestHash,
+                    reward: calculateReward(chain.length),
+                }
+            });
+            scheduleDrop(); // さらに下がる可能性があるので再スケジュール
+        }, dropIntervalMs);
+    }
+    scheduleDrop();
 }
 // ============================================================
 // ブロック報酬算出
@@ -1379,6 +1413,7 @@ function main() {
     loadState();
     connectToSeed();
     startPeriodicTasks();
+    resetDifficultyDropTimer();
     log('Init', 'フルノード起動完了 (BigInt版)');
     log('Init', `チェーン高さ: ${chain.length}, 難易度: ${currentDifficulty}`);
 }
