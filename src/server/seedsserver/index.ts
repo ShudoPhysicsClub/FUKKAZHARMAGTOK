@@ -1044,6 +1044,12 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
       }
       break;
     }
+case 'difficulty_update': {
+  broadcastToClients(packet);
+  log('TCP', `難易度更新ブロードキャスト: diff=${packet.data?.difficulty}`);
+  break;
+}
+
     case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
     case 'token_info': case 'tokens_list': case 'rate': case 'tx_result': case 'block_template':
     case 'mempool': case 'transactions': case 'block':
