@@ -1,13 +1,13 @@
 // ============================================================
-// BTR (Buturi Coin) - フルノード
+// BTR (Buturi Coin) - フルノード BigInt完全対応版
 // ランチャーからforkされて動く
+// 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
 import { connect } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import * as fs from 'fs'; // ★ mkdirSync用に追加
+import * as fs from 'fs';
 class Ed25519 {
-    // ── 定数 ──
     static p = 2n ** 255n - 19n;
     static L = 2n ** 252n + 27742317777372353535851937790883648493n;
     static d = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
@@ -15,15 +15,8 @@ class Ed25519 {
     static Gx = 15112221349535400772501151409588531511454012693041857206046113283949847762202n;
     static Gy = 46316835694926478169428394003475163141307993866256225615783033603165251855960n;
     static G_EXT = [
-        Ed25519.Gx,
-        Ed25519.Gy,
-        1n,
-        (Ed25519.Gx * Ed25519.Gy) % Ed25519.p,
+        Ed25519.Gx, Ed25519.Gy, 1n, (Ed25519.Gx * Ed25519.Gy) % Ed25519.p,
     ];
-    static ED25519_OID = new Uint8Array([
-        0x06, 0x03, 0x2b, 0x65, 0x70,
-    ]);
-    // ── Fixed-window テーブル (遅延初期化, w=4) ──
     static W = 4;
     static _gTable = null;
     static get gTable() {
@@ -38,7 +31,6 @@ class Ed25519 {
         }
         return this._gTable;
     }
-    // ━━━━━━━━━━━━━ 基本演算 ━━━━━━━━━━━━━
     static mod(n, m) {
         const r = n % m;
         return r < 0n ? r + m : r;
@@ -64,7 +56,6 @@ class Ed25519 {
         }
         return result;
     }
-    // ━━━━━━━━━━━━━ 楕円曲線演算 (Extended 座標) ━━━━━━━━━━━━━
     static extAdd(p1, p2) {
         const P = this.p;
         const [X1, Y1, Z1, T1] = p1;
@@ -77,12 +68,7 @@ class Ed25519 {
         const F = this.mod(D - C, P);
         const G = this.mod(D + C, P);
         const H = this.mod(B + A, P);
-        return [
-            this.mod(E * F, P),
-            this.mod(G * H, P),
-            this.mod(F * G, P),
-            this.mod(E * H, P),
-        ];
+        return [this.mod(E * F, P), this.mod(G * H, P), this.mod(F * G, P), this.mod(E * H, P)];
     }
     static extDouble(pt) {
         const P = this.p;
@@ -96,12 +82,7 @@ class Ed25519 {
         const G = this.mod(D + B, P);
         const F = this.mod(G - C, P);
         const H = this.mod(D - B, P);
-        return [
-            this.mod(E * F, P),
-            this.mod(G * H, P),
-            this.mod(F * G, P),
-            this.mod(E * H, P),
-        ];
+        return [this.mod(E * F, P), this.mod(G * H, P), this.mod(F * G, P), this.mod(E * H, P)];
     }
     static extToAffine(pt) {
         const [X, Y, Z] = pt;
@@ -110,7 +91,6 @@ class Ed25519 {
         const zi = this.modInv(Z, this.p);
         return [this.mod(X * zi, this.p), this.mod(Y * zi, this.p)];
     }
-    // ━━━━━━━━━━━━━ スカラー乗算 ━━━━━━━━━━━━━
     static scalarMultG(k) {
         const table = this.gTable;
         const mask = BigInt((1 << this.W) - 1);
@@ -122,17 +102,6 @@ class Ed25519 {
             const idx = Number((k >> BigInt(i * this.W)) & mask);
             if (idx !== 0)
                 R = this.extAdd(R, table[idx]);
-        }
-        return R;
-    }
-    static scalarMult(k, point) {
-        let R = [0n, 1n, 1n, 0n];
-        let Q = point;
-        while (k > 0n) {
-            if (k & 1n)
-                R = this.extAdd(R, Q);
-            Q = this.extDouble(Q);
-            k >>= 1n;
         }
         return R;
     }
@@ -152,7 +121,6 @@ class Ed25519 {
         }
         return R;
     }
-    // ━━━━━━━━━━━━━ エンコーディング ━━━━━━━━━━━━━
     static pointToBytes(point) {
         const [x, y] = point;
         const out = new Uint8Array(32);
@@ -191,8 +159,7 @@ class Ed25519 {
             x = P - x;
         const xc = (x * x) % P;
         const yc = (y * y) % P;
-        if (this.mod(yc - xc, P) !==
-            this.mod(1n + ((this.d * ((xc * yc) % P)) % P), P))
+        if (this.mod(yc - xc, P) !== this.mod(1n + ((this.d * ((xc * yc) % P)) % P), P))
             throw new Error("Point is not on curve");
         return [x, y, 1n, (x * y) % P];
     }
@@ -208,7 +175,6 @@ class Ed25519 {
             r = (r << 8n) | BigInt(bytes[i]);
         return r;
     }
-    // ━━━━━━━━━━━━━ ヘルパー ━━━━━━━━━━━━━
     static async sha512(data) {
         return new Uint8Array(await crypto.subtle.digest("SHA-512", data.buffer));
     }
@@ -227,138 +193,6 @@ class Ed25519 {
     static clamp(s) {
         return (s & ((1n << 255n) - 1n) & ~7n) | (1n << 254n);
     }
-    // ━━━━━━━━━━━━━ DERエンコード ━━━━━━━━━━━━━
-    static encodeDerLength(len) {
-        if (len <= 127)
-            return new Uint8Array([len]);
-        let bytesNeeded;
-        if (len >= 0x1000000)
-            bytesNeeded = 4;
-        else if (len >= 0x10000)
-            bytesNeeded = 3;
-        else if (len >= 0x100)
-            bytesNeeded = 2;
-        else
-            bytesNeeded = 1;
-        const res = new Uint8Array(bytesNeeded + 1);
-        res[0] = 0x80 | bytesNeeded;
-        let t = len;
-        for (let i = bytesNeeded; i >= 1; i--) {
-            res[i] = t & 0xff;
-            t >>= 8;
-        }
-        return res;
-    }
-    static encodeDerSequence(elements) {
-        let total = 0;
-        for (const el of elements)
-            total += el.length;
-        const body = new Uint8Array(total);
-        let off = 0;
-        for (const el of elements) {
-            body.set(el, off);
-            off += el.length;
-        }
-        const len = this.encodeDerLength(body.length);
-        const res = new Uint8Array(1 + len.length + body.length);
-        res[0] = 0x30;
-        res.set(len, 1);
-        res.set(body, 1 + len.length);
-        return res;
-    }
-    static encodeDerOctetString(bytes) {
-        const len = this.encodeDerLength(bytes.length);
-        const res = new Uint8Array(1 + len.length + bytes.length);
-        res[0] = 0x04;
-        res.set(len, 1);
-        res.set(bytes, 1 + len.length);
-        return res;
-    }
-    static encodeDerBitString(bytes) {
-        const len = this.encodeDerLength(bytes.length + 1);
-        const res = new Uint8Array(1 + len.length + 1 + bytes.length);
-        res[0] = 0x03;
-        res.set(len, 1);
-        res[1 + len.length] = 0x00;
-        res.set(bytes, 1 + len.length + 1);
-        return res;
-    }
-    // ━━━━━━━━━━━━━ DERデコード ━━━━━━━━━━━━━
-    static parseDerTLV(data, offset) {
-        const tag = data[offset++];
-        const first = data[offset++];
-        let length;
-        if (first <= 127) {
-            length = first;
-        }
-        else {
-            const n = first & 0x7f;
-            length = 0;
-            for (let i = 0; i < n; i++)
-                length = (length << 8) | data[offset++];
-        }
-        return {
-            tag,
-            value: data.subarray(offset, offset + length),
-            end: offset + length,
-        };
-    }
-    static parseDerChildren(data) {
-        const children = [];
-        let offset = 0;
-        while (offset < data.length) {
-            const tlv = this.parseDerTLV(data, offset);
-            children.push({ tag: tlv.tag, value: tlv.value });
-            offset = tlv.end;
-        }
-        return children;
-    }
-    static unwrapDer(data, expectedTag) {
-        const tlv = this.parseDerTLV(data, 0);
-        if (tlv.tag !== expectedTag)
-            throw new Error(`DER: expected 0x${expectedTag.toString(16)}, got 0x${tlv.tag.toString(16)}`);
-        return tlv.value;
-    }
-    static checkEd25519OID(algSeqValue) {
-        const children = this.parseDerChildren(algSeqValue);
-        if (children.length === 0 || children[0].tag !== 0x06)
-            throw new Error("Expected OID");
-        const oid = children[0].value;
-        if (oid.length !== 3 ||
-            oid[0] !== 0x2b ||
-            oid[1] !== 0x65 ||
-            oid[2] !== 0x70)
-            throw new Error("OID is not Ed25519 (1.3.101.112)");
-    }
-    // ━━━━━━━━━━━━━ Base64 / PEM ━━━━━━━━━━━━━
-    static base64Encode(data) {
-        if (typeof Buffer !== "undefined")
-            return Buffer.from(data).toString("base64");
-        let s = "";
-        for (const b of data)
-            s += String.fromCharCode(b);
-        return btoa(s);
-    }
-    static base64Decode(str) {
-        if (typeof Buffer !== "undefined")
-            return new Uint8Array(Buffer.from(str, "base64"));
-        const bin = atob(str);
-        const out = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++)
-            out[i] = bin.charCodeAt(i);
-        return out;
-    }
-    static pemDecode(pem) {
-        return this.base64Decode(pem.replace(/-----.*?-----|\s+/g, ""));
-    }
-    static pemEncode(der, label) {
-        const b64 = this.base64Encode(der);
-        const lines = [];
-        for (let i = 0; i < b64.length; i += 64)
-            lines.push(b64.substring(i, i + 64));
-        return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----`;
-    }
-    // ━━━━━━━━━━━━━ 公開 API (署名) ━━━━━━━━━━━━━
     static async getPublicKey(privateKey) {
         if (privateKey.length !== 32)
             throw new Error("Private key must be 32 bytes");
@@ -401,57 +235,13 @@ class Ed25519 {
             return false;
         }
     }
-    // ━━━━━━━━━━━━━ 公開 API (PEM) ━━━━━━━━━━━━━
-    static privateKeyToPem(raw) {
-        if (raw.length !== 32)
-            throw new Error("Ed25519 private key must be 32 bytes");
-        const version = new Uint8Array([0x02, 0x01, 0x00]);
-        const algId = this.encodeDerSequence([this.ED25519_OID]);
-        const keyOctet = this.encodeDerOctetString(this.encodeDerOctetString(raw));
-        return this.pemEncode(this.encodeDerSequence([version, algId, keyOctet]), "PRIVATE KEY");
-    }
-    static pemToPrivateKey(pem) {
-        const outer = this.unwrapDer(this.pemDecode(pem), 0x30);
-        const children = this.parseDerChildren(outer);
-        if (children.length < 3)
-            throw new Error("Invalid PKCS#8");
-        this.checkEd25519OID(children[1].value);
-        if (children[2].tag !== 0x04)
-            throw new Error("Expected OCTET STRING");
-        const inner = this.unwrapDer(children[2].value, 0x04);
-        if (inner.length !== 32)
-            throw new Error(`Expected 32 bytes, got ${inner.length}`);
-        return new Uint8Array(inner);
-    }
-    static publicKeyToPem(raw) {
-        if (raw.length !== 32)
-            throw new Error("Ed25519 public key must be 32 bytes");
-        const algId = this.encodeDerSequence([this.ED25519_OID]);
-        const bitStr = this.encodeDerBitString(raw);
-        return this.pemEncode(this.encodeDerSequence([algId, bitStr]), "PUBLIC KEY");
-    }
-    static pemToPublicKey(pem) {
-        const outer = this.unwrapDer(this.pemDecode(pem), 0x30);
-        const children = this.parseDerChildren(outer);
-        if (children.length < 2)
-            throw new Error("Invalid SPKI");
-        this.checkEd25519OID(children[0].value);
-        if (children[1].tag !== 0x03)
-            throw new Error("Expected BIT STRING");
-        const bits = children[1].value;
-        if (bits[0] !== 0x00)
-            throw new Error("BIT STRING unused bits must be 0");
-        const pub = bits.subarray(1);
-        if (pub.length !== 32)
-            throw new Error(`Expected 32 bytes, got ${pub.length}`);
-        return new Uint8Array(pub);
-    }
 }
+// ============================================================
+// 定数 & Wei変換
+// ============================================================
 const DELIMITER = '\nLINE_BREAK\n';
 const BTR_ADDRESS = '0x0000000000000000';
-// ============================================================
-// 設定
-// ============================================================
+const WEI_PER_BTR = 1000000000000000000n; // 10^18
 const CONFIG = {
     SEED_HOST: 'mail.shudo-physics.com',
     SEED_PORT: 5000,
@@ -459,18 +249,58 @@ const CONFIG = {
     ACCOUNTS_FILE: './accounts.json',
     TOKENS_FILE: './tokens.json',
     // ジェネシス設定
-    TOTAL_SUPPLY: 5_000_000_000,
-    BLOCK_TIME: 30, // 30秒
-    BLOCK_REWARD_MIN: 80,
-    BLOCK_REWARD_MAX: 120,
-    GAS_FEE: 1,
-    TOKEN_CREATION_FEE: 10_000,
-    TOKEN_RENAME_FEE: 500,
-    TIMESTAMP_TOLERANCE: 10 * 60 * 1000, // ±10分
-    MAX_BLOCK_SIZE: 3 * 1024 * 1024, // 3MB
-    DIFFICULTY_WINDOW: 10, // 直近10ブロック
+    TOTAL_SUPPLY: (5000000000n * WEI_PER_BTR).toString(), // 5B BTR in Wei
+    BLOCK_TIME: 30,
+    BLOCK_REWARD_MIN: (80n * WEI_PER_BTR).toString(), // 80 BTR
+    BLOCK_REWARD_MAX: (120n * WEI_PER_BTR).toString(), // 120 BTR
+    GAS_FEE: (1n * WEI_PER_BTR).toString(), // 1 BTR
+    TOKEN_CREATION_FEE: (10000n * WEI_PER_BTR).toString(), // 10,000 BTR
+    TOKEN_RENAME_FEE: (500n * WEI_PER_BTR).toString(), // 500 BTR
+    TIMESTAMP_TOLERANCE: 10 * 60 * 1000,
+    MAX_BLOCK_SIZE: 3 * 1024 * 1024,
+    DIFFICULTY_WINDOW: 10,
     ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
 };
+// ============================================================
+// Wei演算ヘルパー
+// ============================================================
+function addWei(a, b) {
+    return (BigInt(a || "0") + BigInt(b || "0")).toString();
+}
+function subWei(a, b) {
+    return (BigInt(a || "0") - BigInt(b || "0")).toString();
+}
+function compareWei(a, b) {
+    const diff = BigInt(a || "0") - BigInt(b || "0");
+    if (diff > 0n)
+        return 1;
+    if (diff < 0n)
+        return -1;
+    return 0;
+}
+function mulWei(a, b) {
+    return (BigInt(a || "0") * BigInt(b || "0")).toString();
+}
+function divWei(a, b) {
+    if (BigInt(b || "0") === 0n)
+        return "0";
+    return (BigInt(a || "0") / BigInt(b || "0")).toString();
+}
+function btrToWei(btr) {
+    return (BigInt(Math.floor(btr)) * WEI_PER_BTR).toString();
+}
+function weiToBtrDisplay(wei) {
+    try {
+        const w = BigInt(wei);
+        const whole = w / WEI_PER_BTR;
+        const frac = w % WEI_PER_BTR;
+        const fracStr = frac.toString().padStart(18, '0').replace(/0+$/, '');
+        return fracStr ? `${whole}.${fracStr}` : whole.toString();
+    }
+    catch {
+        return "0";
+    }
+}
 // ============================================================
 // ヘルパー
 // ============================================================
@@ -516,7 +346,7 @@ const tokens = new Map();
 const ammPools = new Map();
 const pendingTxs = [];
 let commonRandom = '';
-let totalMined = 0;
+let totalMined = "0"; // Wei文字列
 let currentDifficulty = 1;
 // ============================================================
 // アカウント管理
@@ -525,36 +355,16 @@ function getAccount(address) {
     if (!accounts.has(address)) {
         accounts.set(address, {
             address,
-            balance: 0,
+            balance: "0",
             nonce: 0,
             tokens: {},
         });
     }
     return accounts.get(address);
 }
-// ★ アカウント保存ヘルパー
-function saveAccount(account) {
-    try {
-        const filename = `./users/${account.address}.json`;
-        writeFileSync(filename, JSON.stringify(account));
-    }
-    catch (e) {
-        // 保存失敗は無視（定期保存で再試行）
-    }
-}
-// ★ トークン保存ヘルパー
-function saveToken(token) {
-    try {
-        const filename = `./tokens/${token.address}.json`;
-        writeFileSync(filename, JSON.stringify(token));
-    }
-    catch (e) {
-        // 保存失敗は無視（定期保存で再試行）
-    }
-}
 function getTokenBalance(address, tokenAddress) {
     const account = getAccount(address);
-    return account.tokens[tokenAddress] || 0;
+    return account.tokens[tokenAddress] || "0";
 }
 // ============================================================
 // ジェネシスブロック
@@ -567,11 +377,11 @@ function createGenesisBlock() {
         nonce: 0,
         difficulty: 1,
         miner: '0x' + '0'.repeat(40),
-        reward: 0,
+        reward: "0",
         transactions: [],
         hash: '',
         config: CONFIG,
-        message: 'Foooooooooooooooooooo物理班最高!YEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEA',
+        message: 'Foooooooooooooooooooo物理班最高!YEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEA BigInt Edition',
     };
     block.hash = computeBlockHash(block);
     return block;
@@ -605,66 +415,64 @@ async function verifyTransaction(tx) {
     if (tx.nonce !== account.nonce) {
         return { valid: false, error: `nonce不一致 (期待: ${account.nonce}, 受信: ${tx.nonce})` };
     }
-    // 5. 手数料
+    // 5. 手数料 (Wei文字列で比較)
     if (tx.fee !== CONFIG.GAS_FEE) {
         return { valid: false, error: 'ガス代が不正' };
     }
-    // 6. 残高チェック
-    if (account.balance < tx.fee) {
+    // 6. 残高チェック (ガス代分)
+    if (compareWei(account.balance, tx.fee) < 0) {
         return { valid: false, error: 'ガス代の残高不足' };
     }
     // 7. type別チェック
     switch (tx.type) {
         case 'transfer': {
-            if (!tx.to || tx.amount === undefined || tx.amount <= 0) {
+            if (!tx.to || !tx.amount || compareWei(tx.amount, "0") <= 0) {
                 return { valid: false, error: 'transfer: 宛先または金額が不正' };
             }
             if (tx.token === BTR_ADDRESS) {
-                if (account.balance < tx.amount + tx.fee) {
+                if (compareWei(account.balance, addWei(tx.amount, tx.fee)) < 0) {
                     return { valid: false, error: 'BTR残高不足' };
                 }
             }
             break;
         }
         case 'token_transfer': {
-            if (!tx.to || tx.amount === undefined || tx.amount <= 0) {
+            if (!tx.to || !tx.amount || compareWei(tx.amount, "0") <= 0) {
                 return { valid: false, error: 'token_transfer: 宛先または金額が不正' };
             }
             const tokenBal = getTokenBalance(tx.from, tx.token);
-            if (tokenBal < tx.amount) {
+            if (compareWei(tokenBal, tx.amount) < 0) {
                 return { valid: false, error: 'トークン残高不足' };
             }
             break;
         }
         case 'create_token': {
-            if (!tx.data?.name || !tx.data?.symbol || !tx.data?.totalSupply || tx.data.totalSupply <= 0) {
+            if (!tx.data?.name || !tx.data?.symbol || !tx.data?.totalSupply || compareWei(tx.data.totalSupply, "0") <= 0) {
                 return { valid: false, error: 'create_token: データが不正' };
             }
-            if (account.balance < CONFIG.TOKEN_CREATION_FEE + tx.fee) {
+            if (compareWei(account.balance, addWei(CONFIG.TOKEN_CREATION_FEE, tx.fee)) < 0) {
                 return { valid: false, error: 'トークン作成費の残高不足' };
             }
             break;
         }
         case 'swap': {
-            if (!tx.data?.tokenIn || !tx.data?.tokenOut || !tx.data?.amountIn || tx.data.amountIn <= 0) {
+            if (!tx.data?.tokenIn || !tx.data?.tokenOut || !tx.data?.amountIn || compareWei(tx.data.amountIn, "0") <= 0) {
                 return { valid: false, error: 'swap: データが不正' };
             }
             if (tx.data.tokenIn === tx.data.tokenOut) {
                 return { valid: false, error: 'swap: 同一トークン間のスワップ不可' };
             }
-            // 残高チェック
             if (tx.data.tokenIn === BTR_ADDRESS) {
-                if (account.balance < tx.data.amountIn + tx.fee) {
+                if (compareWei(account.balance, addWei(tx.data.amountIn, tx.fee)) < 0) {
                     return { valid: false, error: 'swap: BTR残高不足' };
                 }
             }
             else {
                 const tokenBal = getTokenBalance(tx.from, tx.data.tokenIn);
-                if (tokenBal < tx.data.amountIn) {
+                if (compareWei(tokenBal, tx.data.amountIn) < 0) {
                     return { valid: false, error: 'swap: トークン残高不足' };
                 }
             }
-            // AMMプール存在チェック
             if (tx.data.tokenIn !== BTR_ADDRESS && !ammPools.has(tx.data.tokenIn)) {
                 return { valid: false, error: 'swap: 入力トークンのプールが存在しない' };
             }
@@ -677,7 +485,7 @@ async function verifyTransaction(tx) {
             if (!tx.data?.newName || !tx.token) {
                 return { valid: false, error: 'rename_token: データが不正' };
             }
-            if (account.balance < CONFIG.TOKEN_RENAME_FEE + tx.fee) {
+            if (compareWei(account.balance, addWei(CONFIG.TOKEN_RENAME_FEE, tx.fee)) < 0) {
                 return { valid: false, error: 'トークン名変更費の残高不足' };
             }
             const token = tokens.get(tx.token);
@@ -698,33 +506,33 @@ function applyTransaction(tx, minerAddress) {
     const sender = getAccount(tx.from);
     const miner = getAccount(minerAddress);
     const isSelfMining = (tx.from === minerAddress);
-    // ガス代（自己マイニングの場合は相殺されるので何もしない）
+    // ガス代
     if (!isSelfMining) {
-        sender.balance -= tx.fee;
-        miner.balance += tx.fee;
+        sender.balance = subWei(sender.balance, tx.fee);
+        miner.balance = addWei(miner.balance, tx.fee);
     }
     sender.nonce++;
     switch (tx.type) {
         case 'transfer': {
             const receiver = getAccount(tx.to);
             if (tx.token === BTR_ADDRESS) {
-                sender.balance -= tx.amount;
-                receiver.balance += tx.amount;
+                sender.balance = subWei(sender.balance, tx.amount);
+                receiver.balance = addWei(receiver.balance, tx.amount);
             }
             break;
         }
         case 'token_transfer': {
             const receiver = getAccount(tx.to);
-            const senderBal = sender.tokens[tx.token] || 0;
-            sender.tokens[tx.token] = senderBal - tx.amount;
-            const receiverBal = receiver.tokens[tx.token] || 0;
-            receiver.tokens[tx.token] = receiverBal + tx.amount;
+            const senderBal = sender.tokens[tx.token] || "0";
+            sender.tokens[tx.token] = subWei(senderBal, tx.amount);
+            const receiverBal = receiver.tokens[tx.token] || "0";
+            receiver.tokens[tx.token] = addWei(receiverBal, tx.amount);
             break;
         }
         case 'create_token': {
-            sender.balance -= CONFIG.TOKEN_CREATION_FEE;
+            sender.balance = subWei(sender.balance, CONFIG.TOKEN_CREATION_FEE);
             if (!isSelfMining) {
-                miner.balance += CONFIG.TOKEN_CREATION_FEE;
+                miner.balance = addWei(miner.balance, CONFIG.TOKEN_CREATION_FEE);
             }
             const tokenAddress = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 16);
             const poolRatio = tx.data.poolRatio || 0;
@@ -741,18 +549,21 @@ function applyTransaction(tx, minerAddress) {
                 distribution: tx.data.distribution || 'creator',
             };
             tokens.set(tokenAddress, tokenInfo);
-            // 配布
-            const creatorAmount = totalSupply * (1 - poolRatio);
-            const poolAmount = totalSupply * poolRatio;
-            if (creatorAmount > 0) {
-                sender.tokens[tokenAddress] = (sender.tokens[tokenAddress] || 0) + creatorAmount;
+            // 配布: BigIntで計算
+            const totalBig = BigInt(totalSupply);
+            // poolRatioは0~1のfloat — 整数化して計算: poolAmount = total * (poolRatio * 10000) / 10000
+            const poolRatioInt = BigInt(Math.floor(poolRatio * 10000));
+            const poolAmount = (totalBig * poolRatioInt) / 10000n;
+            const creatorAmount = totalBig - poolAmount;
+            if (creatorAmount > 0n) {
+                sender.tokens[tokenAddress] = addWei(sender.tokens[tokenAddress] || "0", creatorAmount.toString());
             }
             // AMM プール作成
-            if (poolAmount > 0) {
+            if (poolAmount > 0n) {
                 ammPools.set(tokenAddress, {
                     tokenAddress,
-                    btrReserve: CONFIG.TOKEN_CREATION_FEE,
-                    tokenReserve: poolAmount,
+                    btrReserve: CONFIG.TOKEN_CREATION_FEE, // 作成費がプールの初期BTRリザーブ
+                    tokenReserve: poolAmount.toString(),
                 });
             }
             break;
@@ -762,9 +573,9 @@ function applyTransaction(tx, minerAddress) {
             break;
         }
         case 'rename_token': {
-            sender.balance -= CONFIG.TOKEN_RENAME_FEE;
+            sender.balance = subWei(sender.balance, CONFIG.TOKEN_RENAME_FEE);
             if (!isSelfMining) {
-                miner.balance += CONFIG.TOKEN_RENAME_FEE;
+                miner.balance = addWei(miner.balance, CONFIG.TOKEN_RENAME_FEE);
             }
             const token = tokens.get(tx.token);
             if (token) {
@@ -773,65 +584,68 @@ function applyTransaction(tx, minerAddress) {
             break;
         }
     }
-    // アカウント保存はsaveState()で一括処理
 }
 // ============================================================
-// AMM
+// AMM (BigInt版)
 // ============================================================
 function getAMMRate(tokenAddress) {
     const pool = ammPools.get(tokenAddress);
-    if (!pool || pool.tokenReserve === 0)
-        return 0;
-    const baseRate = pool.btrReserve / pool.tokenReserve;
-    return baseRate * 0.97; // 3%手数料を引いた実効レート
+    if (!pool || compareWei(pool.tokenReserve, "0") <= 0)
+        return "0";
+    // rate = btrReserve * 97 / (tokenReserve * 100) — 3%手数料込み
+    // 精度保持のため WEI_PER_BTR をかけてから割る
+    const rate = (BigInt(pool.btrReserve) * 97n * WEI_PER_BTR) / (BigInt(pool.tokenReserve) * 100n);
+    return rate.toString();
 }
 function getFluctuatedRate(tokenAddress, minute) {
-    const base = getAMMRate(tokenAddress);
-    if (base === 0 || !commonRandom)
-        return base;
+    const baseRate = getAMMRate(tokenAddress);
+    if (baseRate === "0" || !commonRandom)
+        return baseRate;
     const seed = sha256(commonRandom + tokenAddress + minute);
     const fluctuation = parseInt(seed.slice(0, 8), 16);
-    const change = (fluctuation % 3000 - 1500) / 10000;
-    return base * (1 + change); // 既に3%引かれた値に変動を適用
+    const change = (fluctuation % 3000 - 1500); // -1500 ~ +1500
+    // rate = base * (10000 + change) / 10000
+    const base = BigInt(baseRate);
+    const result = (base * BigInt(10000 + change)) / 10000n;
+    return result.toString();
 }
+const FEE_NUMERATOR = 3n;
+const FEE_DENOMINATOR = 100n;
 function executeSwap(tx) {
     const tokenIn = tx.data.tokenIn;
     const tokenOut = tx.data.tokenOut;
-    const amountIn = tx.data.amountIn;
+    const amountIn = BigInt(tx.data.amountIn);
     const sender = getAccount(tx.from);
-    const FEE_RATE = 0.03; // 3%手数料
     if (tokenIn === BTR_ADDRESS) {
         // BTR → Token
         const pool = ammPools.get(tokenOut);
         if (!pool)
             return;
-        if (sender.balance < amountIn)
+        if (compareWei(sender.balance, amountIn.toString()) < 0)
             return;
-        // 3%手数料を差し引く
-        const fee = amountIn * FEE_RATE;
+        const fee = amountIn * FEE_NUMERATOR / FEE_DENOMINATOR;
         const amountInAfterFee = amountIn - fee;
-        sender.balance -= amountIn;
-        const amountOut = (amountInAfterFee * pool.tokenReserve) / (pool.btrReserve + amountInAfterFee);
-        pool.btrReserve += amountIn; // 手数料込みでプールに追加
-        pool.tokenReserve -= amountOut;
-        sender.tokens[tokenOut] = (sender.tokens[tokenOut] || 0) + amountOut;
+        sender.balance = subWei(sender.balance, amountIn.toString());
+        const amountOut = (amountInAfterFee * BigInt(pool.tokenReserve)) / (BigInt(pool.btrReserve) + amountInAfterFee);
+        pool.btrReserve = addWei(pool.btrReserve, amountIn.toString());
+        pool.tokenReserve = subWei(pool.tokenReserve, amountOut.toString());
+        sender.tokens[tokenOut] = addWei(sender.tokens[tokenOut] || "0", amountOut.toString());
     }
     else if (tokenOut === BTR_ADDRESS) {
         // Token → BTR
         const pool = ammPools.get(tokenIn);
         if (!pool)
             return;
-        const senderBal = sender.tokens[tokenIn] || 0;
-        if (senderBal < amountIn)
+        const senderBal = sender.tokens[tokenIn] || "0";
+        if (compareWei(senderBal, amountIn.toString()) < 0)
             return;
-        // 3%手数料を差し引く
-        const fee = amountIn * FEE_RATE;
+        const fee = amountIn * FEE_NUMERATOR / FEE_DENOMINATOR;
         const amountInAfterFee = amountIn - fee;
-        sender.tokens[tokenIn] = senderBal - amountIn;
-        const amountOut = (amountInAfterFee * pool.btrReserve) / (pool.tokenReserve + amountInAfterFee);
-        pool.tokenReserve += amountIn; // 手数料込みでプールに追加
-        pool.btrReserve -= amountOut;
-        sender.balance += amountOut;
+        sender.tokens[tokenIn] = subWei(senderBal, amountIn.toString());
+        const amountOut = (amountInAfterFee * BigInt(pool.btrReserve)) / (BigInt(pool.tokenReserve) + amountInAfterFee);
+        pool.tokenReserve = addWei(pool.tokenReserve, amountIn.toString());
+        pool.btrReserve = subWei(pool.btrReserve, amountOut.toString());
+        sender.balance = addWei(sender.balance, amountOut.toString());
     }
     else {
         // Token → Token (TokenA → BTR → TokenB)
@@ -839,45 +653,39 @@ function executeSwap(tx) {
         const poolB = ammPools.get(tokenOut);
         if (!poolA || !poolB)
             return;
-        const senderBal = sender.tokens[tokenIn] || 0;
-        if (senderBal < amountIn)
+        const senderBal = sender.tokens[tokenIn] || "0";
+        if (compareWei(senderBal, amountIn.toString()) < 0)
             return;
-        // 3%手数料を差し引く（TokenA側）
-        const feeA = amountIn * FEE_RATE;
+        const feeA = amountIn * FEE_NUMERATOR / FEE_DENOMINATOR;
         const amountInAfterFee = amountIn - feeA;
-        sender.tokens[tokenIn] = senderBal - amountIn;
+        sender.tokens[tokenIn] = subWei(senderBal, amountIn.toString());
         // TokenA → BTR
-        const btrAmount = (amountInAfterFee * poolA.btrReserve) / (poolA.tokenReserve + amountInAfterFee);
-        poolA.tokenReserve += amountIn; // 手数料込みでプールに追加
-        poolA.btrReserve -= btrAmount;
-        // 3%手数料を差し引く（BTR側）
-        const feeB = btrAmount * FEE_RATE;
+        const btrAmount = (amountInAfterFee * BigInt(poolA.btrReserve)) / (BigInt(poolA.tokenReserve) + amountInAfterFee);
+        poolA.tokenReserve = addWei(poolA.tokenReserve, amountIn.toString());
+        poolA.btrReserve = subWei(poolA.btrReserve, btrAmount.toString());
+        // BTR → TokenB (2回目手数料)
+        const feeB = btrAmount * FEE_NUMERATOR / FEE_DENOMINATOR;
         const btrAmountAfterFee = btrAmount - feeB;
-        // BTR → TokenB
-        const amountOut = (btrAmountAfterFee * poolB.tokenReserve) / (poolB.btrReserve + btrAmountAfterFee);
-        poolB.btrReserve += btrAmount; // 手数料込みでプールに追加
-        poolB.tokenReserve -= amountOut;
-        sender.tokens[tokenOut] = (sender.tokens[tokenOut] || 0) + amountOut;
+        const amountOut = (btrAmountAfterFee * BigInt(poolB.tokenReserve)) / (BigInt(poolB.btrReserve) + btrAmountAfterFee);
+        poolB.btrReserve = addWei(poolB.btrReserve, btrAmount.toString());
+        poolB.tokenReserve = subWei(poolB.tokenReserve, amountOut.toString());
+        sender.tokens[tokenOut] = addWei(sender.tokens[tokenOut] || "0", amountOut.toString());
     }
 }
 // ============================================================
 // ブロック検証
 // ============================================================
 function verifyBlock(block) {
-    // 難易度は正の整数であること
     if (block.difficulty < 1 || !Number.isInteger(block.difficulty)) {
         return { valid: false, error: `難易度が不正: ${block.difficulty}` };
     }
-    // ハッシュ検証
     const expectedHash = computeBlockHash(block);
     if (block.hash !== expectedHash) {
         return { valid: false, error: 'ブロックハッシュ不一致' };
     }
-    // PoW検証（ブロック自身の難易度で）
     if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
         return { valid: false, error: 'PoW条件を満たしていない' };
     }
-    // チェーン連結
     if (chain.length > 0) {
         const prev = chain[chain.length - 1];
         if (block.previousHash !== prev.hash) {
@@ -887,13 +695,12 @@ function verifyBlock(block) {
             return { valid: false, error: 'height不一致' };
         }
     }
-    // ブロックサイズ
     const size = Buffer.byteLength(JSON.stringify(block.transactions));
     if (size > CONFIG.MAX_BLOCK_SIZE) {
         return { valid: false, error: 'ブロックサイズ超過' };
     }
-    // 報酬チェック
-    if (block.reward < CONFIG.BLOCK_REWARD_MIN || block.reward > CONFIG.BLOCK_REWARD_MAX) {
+    // 報酬チェック (Wei文字列比較)
+    if (compareWei(block.reward, CONFIG.BLOCK_REWARD_MIN) < 0 || compareWei(block.reward, CONFIG.BLOCK_REWARD_MAX) > 0) {
         return { valid: false, error: '報酬が範囲外' };
     }
     return { valid: true };
@@ -903,27 +710,30 @@ function verifyBlock(block) {
 // ============================================================
 function applyBlock(block) {
     // マイニング報酬
-    if (block.height > 0 && totalMined < CONFIG.TOTAL_SUPPLY) {
+    if (block.height > 0 && compareWei(totalMined, CONFIG.TOTAL_SUPPLY) < 0) {
         const miner = getAccount(block.miner);
-        const reward = Math.min(block.reward, CONFIG.TOTAL_SUPPLY - totalMined);
-        miner.balance += reward;
-        totalMined += reward;
+        const remaining = subWei(CONFIG.TOTAL_SUPPLY, totalMined);
+        const reward = compareWei(block.reward, remaining) <= 0 ? block.reward : remaining;
+        miner.balance = addWei(miner.balance, reward);
+        totalMined = addWei(totalMined, reward);
     }
     // トランザクション適用
     for (const tx of block.transactions) {
         applyTransaction(tx, block.miner);
     }
     // マイニングトークン配布
+    const MINING_TOKEN_REWARD = (100n * WEI_PER_BTR).toString(); // 100トークン/ブロック
     for (const [, token] of tokens) {
-        if (token.distribution === 'mining' && token.distributed < token.totalSupply) {
+        if (token.distribution === 'mining' && compareWei(token.distributed, token.totalSupply) < 0) {
             const miner = getAccount(block.miner);
-            const tokenReward = Math.min(100, token.totalSupply - token.distributed);
-            miner.tokens[token.address] = (miner.tokens[token.address] || 0) + tokenReward;
-            token.distributed += tokenReward;
+            const remaining = subWei(token.totalSupply, token.distributed);
+            const tokenReward = compareWei(MINING_TOKEN_REWARD, remaining) <= 0 ? MINING_TOKEN_REWARD : remaining;
+            miner.tokens[token.address] = addWei(miner.tokens[token.address] || "0", tokenReward);
+            token.distributed = addWei(token.distributed, tokenReward);
         }
     }
     chain.push(block);
-    // ★ 新ブロックを即座にファイル保存
+    // ブロックファイル保存
     try {
         const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
         writeFileSync(filename, JSON.stringify(block));
@@ -931,14 +741,12 @@ function applyBlock(block) {
     catch (e) {
         log('Save', `ブロック保存失敗: ${e}`);
     }
-    // 難易度調整
     adjustDifficulty();
     // pending から適用済みTxを除去
     const txSigs = new Set(block.transactions.map(tx => tx.signature));
     const remaining = pendingTxs.filter(tx => !txSigs.has(tx.signature));
     pendingTxs.length = 0;
     pendingTxs.push(...remaining);
-    // saveState()は呼ばない（定期保存のみ）
 }
 // ============================================================
 // 難易度調整
@@ -952,25 +760,28 @@ function adjustDifficulty() {
     const targetMs = CONFIG.BLOCK_TIME * 1000;
     if (avgTime < targetMs * 0.85) {
         currentDifficulty++;
-        log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
+        log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
     }
     else if (avgTime > targetMs * 1.15 && currentDifficulty > 1) {
         currentDifficulty--;
-        log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒, 目標 ${CONFIG.BLOCK_TIME}秒)`);
+        log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
     }
 }
 // ============================================================
-// ブロック報酬算出（分散乱数ベース）
+// ブロック報酬算出
 // ============================================================
 function calculateReward(height) {
     if (!commonRandom)
-        return 100;
-    if (totalMined >= CONFIG.TOTAL_SUPPLY)
-        return 0;
+        return (100n * WEI_PER_BTR).toString(); // 100 BTR default
+    if (compareWei(totalMined, CONFIG.TOTAL_SUPPLY) >= 0)
+        return "0";
     const seed = sha256(commonRandom + 'BTR_REWARD' + height);
     const value = parseInt(seed.slice(0, 8), 16);
-    const reward = CONFIG.BLOCK_REWARD_MIN + (value % (CONFIG.BLOCK_REWARD_MAX - CONFIG.BLOCK_REWARD_MIN + 1));
-    return Math.min(reward, CONFIG.TOTAL_SUPPLY - totalMined);
+    const range = 120 - 80 + 1;
+    const rewardBtr = 80 + (value % range);
+    const rewardWei = (BigInt(rewardBtr) * WEI_PER_BTR).toString();
+    const remaining = subWei(CONFIG.TOTAL_SUPPLY, totalMined);
+    return compareWei(rewardWei, remaining) <= 0 ? rewardWei : remaining;
 }
 // ============================================================
 // フォーク選択
@@ -987,30 +798,19 @@ function selectChain(otherChain) {
             return false;
         }
     }
-    // 他チェーンが長いまたは累積難易度が高い → 巻き戻し & 適用
     log('Chain', `フォーク検出: 現在=${chain.length}, 受信=${otherChain.length}`);
     rebuildState(otherChain);
     return true;
 }
-function rebuildState(newChain, silent = true) {
-    // 全リセット
+function rebuildState(newChain) {
     chain.length = 0;
     accounts.clear();
     tokens.clear();
     ammPools.clear();
-    totalMined = 0;
+    totalMined = "0";
     currentDifficulty = 1;
-    // 再適用（サイレントモード）
-    const originalApplyBlock = applyBlock;
-    if (silent) {
-        // サイレントモード: ログを抑制
-        globalThis.__rebuildingSilent = true;
-    }
     for (const block of newChain) {
         applyBlock(block);
-    }
-    if (silent) {
-        delete globalThis.__rebuildingSilent;
     }
 }
 // ============================================================
@@ -1018,32 +818,24 @@ function rebuildState(newChain, silent = true) {
 // ============================================================
 function saveState() {
     try {
-        // ディレクトリ作成
-        if (!existsSync('./chain')) {
+        if (!existsSync('./chain'))
             fs.mkdirSync('./chain', { recursive: true });
-        }
-        if (!existsSync('./users')) {
+        if (!existsSync('./users'))
             fs.mkdirSync('./users', { recursive: true });
-        }
-        if (!existsSync('./tokens')) {
+        if (!existsSync('./tokens'))
             fs.mkdirSync('./tokens', { recursive: true });
-        }
-        // チェーン保存: 各ブロックを個別ファイルに
         for (const block of chain) {
             const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
             writeFileSync(filename, JSON.stringify(block));
         }
-        // アカウント保存: 各アカウントを個別ファイルに
         for (const [address, account] of accounts) {
             const filename = `./users/${address}.json`;
             writeFileSync(filename, JSON.stringify(account));
         }
-        // トークン保存: 各トークンを個別ファイルに
         for (const [address, token] of tokens) {
             const filename = `./tokens/${address}.json`;
             writeFileSync(filename, JSON.stringify(token));
         }
-        // メタデータ保存
         const meta = {
             chainLength: chain.length,
             accountCount: accounts.size,
@@ -1059,24 +851,18 @@ function saveState() {
 }
 function loadState() {
     try {
-        // ディレクトリ作成
-        if (!existsSync('./chain')) {
+        if (!existsSync('./chain'))
             fs.mkdirSync('./chain', { recursive: true });
-        }
-        if (!existsSync('./users')) {
+        if (!existsSync('./users'))
             fs.mkdirSync('./users', { recursive: true });
-        }
-        if (!existsSync('./tokens')) {
+        if (!existsSync('./tokens'))
             fs.mkdirSync('./tokens', { recursive: true });
-        }
-        // メタデータ読み込み
         let chainLength = 0;
         if (existsSync('./state_meta.json')) {
             const meta = JSON.parse(readFileSync('./state_meta.json', 'utf-8'));
             chainLength = meta.chainLength || 0;
         }
         if (chainLength > 0) {
-            // チェーン読み込み: 各ブロックファイルから
             const blocks = [];
             for (let height = 0; height < chainLength; height++) {
                 const filename = `./chain/${height.toString().padStart(64, '0')}.json`;
@@ -1090,30 +876,21 @@ function loadState() {
             }
             if (blocks.length > 0) {
                 rebuildState(blocks);
-                log('Load', `チェーン読み込み: ${chain.length}ブロック (ファイルベース)`);
+                log('Load', `チェーン読み込み: ${chain.length}ブロック`);
             }
             else {
-                // ジェネシスブロック
                 const genesis = createGenesisBlock();
                 chain.push(genesis);
                 log('Load', 'ジェネシスブロック作成');
             }
         }
         else {
-            // 旧形式からの移行チェック
             if (existsSync(CONFIG.CHAIN_FILE)) {
-                log('Load', '旧形式検出: 移行中...');
-                const data = JSON.parse(readFileSync(CONFIG.CHAIN_FILE, 'utf-8'));
-                rebuildState(data);
-                saveState(); // 新形式で保存
-                log('Load', `チェーン移行完了: ${chain.length}ブロック`);
+                log('Load', '旧形式検出: 移行不可（BigInt版は互換性なし）');
             }
-            else {
-                // ジェネシスブロック
-                const genesis = createGenesisBlock();
-                chain.push(genesis);
-                log('Load', 'ジェネシスブロック作成');
-            }
+            const genesis = createGenesisBlock();
+            chain.push(genesis);
+            log('Load', 'ジェネシスブロック作成 (BigInt版)');
         }
     }
     catch (e) {
@@ -1135,16 +912,13 @@ function startSyncTimeout() {
         clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
         if (isSyncing) {
-            log('Sync', 'タイムアウト — フォールバック: シードに直接チェーン要求');
+            log('Sync', 'タイムアウト — フォールバック');
             isSyncing = false;
             syncBuffer = [];
-            // フォールバック: シードサーバー経由で自分からチェーンを要求
             sendToSeed({ type: 'request_chain', data: { fromHeight: chain.length } });
-            // 2回目のタイムアウト
             syncTimer = setTimeout(() => {
-                if (chain.length <= 1) {
+                if (chain.length <= 1)
                     log('Sync', '同期失敗、ジェネシスから開始');
-                }
                 syncTimer = null;
             }, 15000);
         }
@@ -1157,14 +931,8 @@ function finishSync() {
         syncTimer = null;
     }
     saveState();
-    // ★ メタデータ更新
     try {
-        const meta = {
-            chainLength: chain.length,
-            accountCount: accounts.size,
-            tokenCount: tokens.size,
-            lastSaved: Date.now()
-        };
+        const meta = { chainLength: chain.length, accountCount: accounts.size, tokenCount: tokens.size, lastSaved: Date.now() };
         writeFileSync('./state_meta.json', JSON.stringify(meta, null, 2));
     }
     catch (e) {
@@ -1182,12 +950,10 @@ function connectToSeed() {
     log('Net', `シードノードに接続中: ${CONFIG.SEED_HOST}:${CONFIG.SEED_PORT}`);
     seedSocket = connect(CONFIG.SEED_PORT, CONFIG.SEED_HOST, () => {
         log('Net', '接続成功');
-        // ノード登録
         sendToSeed({
             type: 'register',
             data: { chainHeight: chain.length, difficulty: currentDifficulty }
         });
-        // 同期待ちタイマー開始
         isSyncing = true;
         startSyncTimeout();
     });
@@ -1202,9 +968,7 @@ function connectToSeed() {
                 const packet = JSON.parse(part);
                 handlePacket(packet);
             }
-            catch {
-                // パース失敗
-            }
+            catch { }
         }
     });
     seedSocket.on('close', () => {
@@ -1226,15 +990,12 @@ function sendToSeed(packet) {
 // ============================================================
 async function handlePacket(packet) {
     switch (packet.type) {
-        // --- ハートビート ---
         case 'ping':
             sendToSeed({ type: 'pong' });
             break;
-        // --- ノードリスト ---
         case 'node_list': {
             const nodes = packet.data?.nodes || [];
             log('Net', `ノードリスト受信: ${nodes.length}台`);
-            // 自分しかいない or 自分が最長 → 同期完了
             if (isSyncing && nodes.length <= 1) {
                 log('Sync', '他ノードなし、同期スキップ');
                 finishSync();
@@ -1256,7 +1017,6 @@ async function handlePacket(packet) {
                 applyBlock(block);
                 log('Block', `ブロック適用: #${block.height} by ${block.miner.slice(0, 10)}... (${block.transactions.length}tx)`);
                 saveState();
-                // クライアントに結果を返す（難易度・最新ハッシュ含む）
                 sendToSeed({
                     type: 'block_accepted',
                     data: {
@@ -1286,16 +1046,13 @@ async function handlePacket(packet) {
         // --- トランザクション受信 ---
         case 'tx': {
             const clientId = packet.data?.clientId;
-            // clientIdを除去してトランザクションだけにする
             const { clientId: _cid, ...txOnly } = packet.data;
             const tx = txOnly;
             const result = await verifyTransaction(tx);
             if (result.valid) {
                 pendingTxs.push(tx);
                 log('Tx', `受付: ${tx.type} from ${tx.from.slice(0, 10)}...`);
-                // 他ノードにも伝播
                 sendToSeed({ type: 'tx_broadcast', data: tx });
-                // 結果返答
                 if (clientId) {
                     sendToSeed({ type: 'tx_result', data: { clientId, success: true, txType: tx.type } });
                 }
@@ -1312,15 +1069,13 @@ async function handlePacket(packet) {
             const tx = packet.data;
             const result = await verifyTransaction(tx);
             if (result.valid) {
-                // 重複チェック
                 const exists = pendingTxs.some(p => p.signature === tx.signature);
-                if (!exists) {
+                if (!exists)
                     pendingTxs.push(tx);
-                }
             }
             break;
         }
-        // --- クライアントからの照会 ---
+        // --- クライアント照会 ---
         case 'get_balance': {
             const clientId = packet.data?.clientId;
             const address = packet.data?.address;
@@ -1357,13 +1112,8 @@ async function handlePacket(packet) {
             sendToSeed({
                 type: 'block_template',
                 data: {
-                    clientId,
-                    height: chain.length,
-                    previousHash: latestHash,
-                    difficulty: currentDifficulty,
-                    reward,
-                    transactions: pendingTxs,
-                    miner,
+                    clientId, height: chain.length, previousHash: latestHash,
+                    difficulty: currentDifficulty, reward, transactions: pendingTxs, miner,
                 }
             });
             break;
@@ -1373,23 +1123,16 @@ async function handlePacket(packet) {
             let from = packet.data?.from || 0;
             let to = packet.data?.to || chain.length;
             const isAdmin = packet.data?.admin || false;
-            // 負の値の場合は最新から取得
             if (from < 0) {
                 from = Math.max(0, chain.length + from);
                 to = chain.length;
             }
             const chunk = chain.slice(from, to);
             if (isAdmin) {
-                sendToSeed({
-                    type: 'admin_blocks',
-                    data: { clientId, blocks: chunk }
-                });
+                sendToSeed({ type: 'admin_blocks', data: { clientId, blocks: chunk } });
             }
             else {
-                sendToSeed({
-                    type: 'chain_chunk',
-                    data: { clientId, from, to, blocks: chunk }
-                });
+                sendToSeed({ type: 'chain_chunk', data: { clientId, from, to, blocks: chunk } });
             }
             break;
         }
@@ -1397,10 +1140,7 @@ async function handlePacket(packet) {
             const clientId = packet.data?.clientId;
             const tokenAddress = packet.data?.address;
             const token = tokens.get(tokenAddress);
-            sendToSeed({
-                type: 'token_info',
-                data: { clientId, token: token || null }
-            });
+            sendToSeed({ type: 'token_info', data: { clientId, token: token || null } });
             break;
         }
         case 'get_tokens_list': {
@@ -1408,10 +1148,7 @@ async function handlePacket(packet) {
             const list = Array.from(tokens.values()).map(t => ({
                 address: t.address, symbol: t.symbol, name: t.name, totalSupply: t.totalSupply
             }));
-            sendToSeed({
-                type: 'tokens_list',
-                data: { clientId, tokens: list }
-            });
+            sendToSeed({ type: 'tokens_list', data: { clientId, tokens: list } });
             break;
         }
         case 'get_rate': {
@@ -1419,183 +1156,69 @@ async function handlePacket(packet) {
             const tokenAddress = packet.data?.address;
             const minute = Math.floor(Date.now() / 60000);
             const rate = getFluctuatedRate(tokenAddress, minute);
-            sendToSeed({
-                type: 'rate',
-                data: { clientId, tokenAddress, rate, minute }
-            });
+            sendToSeed({ type: 'rate', data: { clientId, tokenAddress, rate, minute } });
             break;
         }
-        // --- 誰でもアクセス可能 ---
         case 'get_mempool': {
             const clientId = packet.data?.clientId;
             const isAdmin = packet.data?.admin || false;
-            if (isAdmin) {
-                sendToSeed({
-                    type: 'admin_mempool',
-                    data: {
-                        clientId,
-                        count: pendingTxs.length,
-                        transactions: pendingTxs.slice(0, 50)
-                    }
-                });
-            }
-            else {
-                sendToSeed({
-                    type: 'mempool',
-                    data: {
-                        clientId,
-                        count: pendingTxs.length,
-                        transactions: pendingTxs.slice(0, 50)
-                    }
-                });
-            }
+            const responseType = isAdmin ? 'admin_mempool' : 'mempool';
+            sendToSeed({
+                type: responseType,
+                data: { clientId, count: pendingTxs.length, transactions: pendingTxs.slice(0, 50) }
+            });
             break;
         }
         case 'get_recent_transactions': {
             const clientId = packet.data?.clientId;
             const limit = packet.data?.limit || 50;
             const isAdmin = packet.data?.admin || false;
-            // 最新のブロックからトランザクションを収集
             const recentTxs = [];
             for (let i = chain.length - 1; i >= 0 && recentTxs.length < limit; i--) {
-                const block = chain[i];
-                for (const tx of block.transactions) {
+                for (const tx of chain[i].transactions) {
                     if (recentTxs.length >= limit)
                         break;
                     recentTxs.push(tx);
                 }
             }
-            if (isAdmin) {
-                sendToSeed({
-                    type: 'admin_transactions',
-                    data: { clientId, transactions: recentTxs }
-                });
-            }
-            else {
-                sendToSeed({
-                    type: 'transactions',
-                    data: { clientId, transactions: recentTxs }
-                });
-            }
+            const responseType = isAdmin ? 'admin_transactions' : 'transactions';
+            sendToSeed({ type: responseType, data: { clientId, transactions: recentTxs } });
             break;
         }
         case 'get_block': {
             const clientId = packet.data?.clientId;
             const height = packet.data?.height;
             if (height >= 0 && height < chain.length) {
-                sendToSeed({
-                    type: 'block',
-                    data: { clientId, block: chain[height] }
-                });
+                sendToSeed({ type: 'block', data: { clientId, block: chain[height] } });
             }
             else {
-                sendToSeed({
-                    type: 'block',
-                    data: { clientId, block: null, error: 'ブロックが見つかりません' }
-                });
+                sendToSeed({ type: 'block', data: { clientId, block: null, error: 'ブロックが見つかりません' } });
             }
             break;
         }
-        // --- 管理者コマンド (root only) ---
-        case 'admin_mint': {
-            const { address, amount, clientId } = packet.data;
-            // Validate amount
-            if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
-                sendToSeed({
-                    type: 'admin_mint_result',
-                    data: { clientId, success: false, message: '無効な金額です' }
-                });
-                break;
-            }
-            // Validate amount is within reasonable bounds (max 1 billion BTR per mint)
-            if (amount > 1_000_000_000) {
-                sendToSeed({
-                    type: 'admin_mint_result',
-                    data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
-                });
-                break;
-            }
-            log('Admin', `コイン発行実行: ${address} に ${amount} BTR`);
-            const account = getAccount(address);
-            account.balance += amount;
-            saveState();
+        // ★ admin_mint, admin_distribute, admin_clear_mempool, admin_remove_tx は削除済み
+        // --- 管理者コマンド (残存: ステータス確認のみ) ---
+        case 'admin_status': {
+            const clientId = packet.data?.clientId;
             sendToSeed({
-                type: 'admin_mint_result',
-                data: { clientId, success: true, address, amount, newBalance: account.balance }
-            });
-            break;
-        }
-        case 'admin_distribute': {
-            const { distributions, clientId } = packet.data;
-            log('Admin', `一括配給実行: ${distributions.length} 件`);
-            // Validate all distributions first
-            for (const dist of distributions) {
-                const { amount } = dist;
-                if (typeof amount !== 'number' || amount <= 0 || !isFinite(amount)) {
-                    sendToSeed({
-                        type: 'admin_distribute_result',
-                        data: { clientId, success: false, message: '無効な金額が含まれています' }
-                    });
-                    return;
+                type: 'admin_status',
+                data: {
+                    clientId,
+                    chainHeight: chain.length,
+                    difficulty: currentDifficulty,
+                    accounts: accounts.size,
+                    tokens: tokens.size,
+                    pendingTxs: pendingTxs.length,
+                    totalMined: weiToBtrDisplay(totalMined),
+                    totalMinedWei: totalMined,
                 }
-                if (amount > 1_000_000_000) {
-                    sendToSeed({
-                        type: 'admin_distribute_result',
-                        data: { clientId, success: false, message: '金額が大きすぎます（最大: 1,000,000,000 BTR）' }
-                    });
-                    return;
-                }
-            }
-            const results = [];
-            for (const dist of distributions) {
-                const { address, amount } = dist;
-                const account = getAccount(address);
-                account.balance += amount;
-                results.push({ address, amount, newBalance: account.balance });
-            }
-            saveState();
-            sendToSeed({
-                type: 'admin_distribute_result',
-                data: { clientId, success: true, count: results.length, results }
-            });
-            break;
-        }
-        case 'admin_clear_mempool': {
-            const { clientId } = packet.data;
-            const count = pendingTxs.length;
-            log('Admin', `Mempool全消去: ${count} 件のトランザクションを削除`);
-            pendingTxs.length = 0;
-            sendToSeed({
-                type: 'admin_clear_mempool_result',
-                data: { clientId, success: true, count }
-            });
-            break;
-        }
-        case 'admin_remove_tx': {
-            const { signature, clientId } = packet.data;
-            log('Admin', `トランザクション削除: ${signature.slice(0, 16)}...`);
-            const index = pendingTxs.findIndex(tx => tx.signature === signature);
-            let success = false;
-            if (index !== -1) {
-                pendingTxs.splice(index, 1);
-                success = true;
-                log('Admin', `トランザクション削除成功`);
-            }
-            else {
-                log('Admin', `トランザクションが見つかりません`);
-            }
-            sendToSeed({
-                type: 'admin_remove_tx_result',
-                data: { clientId, success, signature }
             });
             break;
         }
         // --- 分散乱数 ---
         case 'random_request': {
-            // 乱数生成 & コミット
             const myRandom = randomBytes(32).toString('hex');
             const commit = sha256(myRandom);
-            // 一時保存（revealで使う）
             global.__btrRandomValue = myRandom;
             sendToSeed({ type: 'random_commit', data: { hash: commit } });
             break;
@@ -1612,7 +1235,6 @@ async function handlePacket(packet) {
         }
         // --- チェーン同期 ---
         case 'send_chain_to': {
-            // シードサーバーから依頼: 新ノード向けにチェーンを送る
             const targetNodeId = packet.data?.targetNodeId;
             const fromHeight = packet.data?.fromHeight || 0;
             if (chain.length > fromHeight) {
@@ -1624,16 +1246,10 @@ async function handlePacket(packet) {
                     const chunk = chain.slice(i, Math.min(i + CHUNK_SIZE, chain.length));
                     sendToSeed({
                         type: 'chain_sync',
-                        data: {
-                            targetNodeId,
-                            blocks: chunk,
-                            chunkIndex,
-                            totalChunks,
-                            totalHeight: chain.length,
-                        }
+                        data: { targetNodeId, blocks: chunk, chunkIndex, totalChunks, totalHeight: chain.length }
                     });
                 }
-                log('Sync', `チェーン送信: → ${targetNodeId} (${fromHeight}〜${chain.length}, ${totalChunks}チャンク)`);
+                log('Sync', `チェーン送信: → ${targetNodeId} (${fromHeight}〜${chain.length})`);
             }
             break;
         }
@@ -1644,17 +1260,13 @@ async function handlePacket(packet) {
             const chunkIndex = packet.data?.chunkIndex || 1;
             const totalChunks = packet.data?.totalChunks || 1;
             const totalHeight = packet.data?.totalHeight || 0;
-            log('Sync', `チャンク受信: ${chunkIndex}/${totalChunks} (${blocks.length}ブロック, height ${blocks[0].height}〜${blocks[blocks.length - 1].height})`);
-            // バッファに追加
+            log('Sync', `チャンク受信: ${chunkIndex}/${totalChunks} (${blocks.length}ブロック)`);
             syncBuffer.push(...blocks);
-            // タイムアウトリセット
             if (syncTimer)
                 clearTimeout(syncTimer);
             startSyncTimeout();
-            // 全チャンク受信完了チェック
             if (chunkIndex >= totalChunks || syncBuffer.length >= totalHeight) {
                 log('Sync', `全チャンク受信完了: ${syncBuffer.length}ブロック`);
-                // ソート（念のため）
                 syncBuffer.sort((a, b) => a.height - b.height);
                 if (syncBuffer.length > chain.length) {
                     if (syncBuffer[0].height === 0) {
@@ -1671,7 +1283,6 @@ async function handlePacket(packet) {
             break;
         }
         case 'chain_sync_response': {
-            // フォールバック: シードから直接チェーンを受信
             const blocks = packet.data?.blocks;
             if (!blocks || blocks.length === 0) {
                 log('Sync', 'フォールバック応答: ブロックなし');
@@ -1681,9 +1292,8 @@ async function handlePacket(packet) {
             log('Sync', `フォールバック受信: ${blocks.length}ブロック`);
             blocks.sort((a, b) => a.height - b.height);
             if (blocks.length > chain.length) {
-                if (blocks[0].height === 0) {
+                if (blocks[0].height === 0)
                     selectChain(blocks);
-                }
                 else if (blocks[0].height <= chain.length) {
                     const merged = [...chain.slice(0, blocks[0].height), ...blocks];
                     selectChain(merged);
@@ -1693,15 +1303,11 @@ async function handlePacket(packet) {
             break;
         }
         case 'send_chain_direct': {
-            // フォールバック: シードから直接依頼 — チャンク分割せず一括送信
             const targetNodeId = packet.data?.targetNodeId;
             const fromHeight = packet.data?.fromHeight || 0;
             if (chain.length > fromHeight) {
                 const blocks = chain.slice(fromHeight);
-                sendToSeed({
-                    type: 'chain_sync_direct',
-                    data: { targetNodeId, blocks }
-                });
+                sendToSeed({ type: 'chain_sync_direct', data: { targetNodeId, blocks } });
                 log('Sync', `フォールバック送信: → ${targetNodeId} (${blocks.length}ブロック)`);
             }
             break;
@@ -1709,7 +1315,6 @@ async function handlePacket(packet) {
         // --- アップデート ---
         case 'update': {
             log('Update', `アップデート受信: v${packet.data?.version}`);
-            // ランチャーに転送
             if (process.send) {
                 process.send({ type: 'update', data: packet.data });
             }
@@ -1722,7 +1327,6 @@ async function handlePacket(packet) {
             break;
         }
         case 'sync_needed': {
-            // シードサーバーから「遅れてるから同期して」と言われた
             log('Sync', `同期要求受信: 現在=${chain.length}, ネットワーク最長=${packet.data?.bestHeight || '?'}`);
             if (!isSyncing) {
                 isSyncing = true;
@@ -1732,7 +1336,6 @@ async function handlePacket(packet) {
             break;
         }
         default:
-            // 未知のパケットは無視
             break;
     }
 }
@@ -1740,24 +1343,30 @@ async function handlePacket(packet) {
 // 定期処理
 // ============================================================
 function startPeriodicTasks() {
-    // チェーン高さを定期報告（30秒ごと）
     setInterval(() => {
         sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
     }, 30000);
-    // 状態保存（60秒ごと）
+    setInterval(() => { saveState(); }, 60000);
     setInterval(() => {
-        saveState();
+        log('Stats', `チェーン: ${chain.length}ブロック, アカウント: ${accounts.size}, pending: ${pendingTxs.length}, 発行済: ${weiToBtrDisplay(totalMined)} BTR`);
     }, 60000);
-    // ログ（60秒ごと）
-    setInterval(() => {
-        log('Stats', `チェーン: ${chain.length}ブロック, アカウント: ${accounts.size}, pending: ${pendingTxs.length}, 発行済: ${totalMined.toLocaleString()} BTR`);
-    }, 60000);
-    // 同期チェック（2分ごと）: 自分が遅れてたら再同期を要求
     setInterval(() => {
         if (!isSyncing) {
             sendToSeed({ type: 'check_sync', data: { height: chain.length } });
         }
     }, 120000);
+    // pendingTxs クリーンアップ（5分ごと）
+    setInterval(() => {
+        const now = Date.now();
+        const TIMEOUT = 3600000;
+        const oldCount = pendingTxs.length;
+        const filtered = pendingTxs.filter(tx => now - tx.timestamp < TIMEOUT);
+        pendingTxs.length = 0;
+        pendingTxs.push(...filtered);
+        const removed = oldCount - pendingTxs.length;
+        if (removed > 0)
+            log('Mempool', `古いTx削除: ${removed}件`);
+    }, 300000);
 }
 // ============================================================
 // エントリーポイント
@@ -1765,14 +1374,12 @@ function startPeriodicTasks() {
 function main() {
     console.log('========================================');
     console.log('  BTR (Buturi Coin) Full Node');
+    console.log('  BigInt Edition (Wei = 10^18)');
     console.log('========================================');
-    // 状態読み込み
     loadState();
-    // シードノードに接続
     connectToSeed();
-    // 定期処理開始
     startPeriodicTasks();
-    log('Init', 'フルノード起動完了');
+    log('Init', 'フルノード起動完了 (BigInt版)');
     log('Init', `チェーン高さ: ${chain.length}, 難易度: ${currentDifficulty}`);
 }
 main();
