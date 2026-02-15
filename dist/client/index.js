@@ -118,6 +118,31 @@ function switchTab(panelName) {
         panel.classList.add('active');
 }
 // ============================================================
+// アップデートチェック（切断時にCDNを確認）
+// ============================================================
+let currentScriptHash = '';
+async function checkForUpdate() {
+    try {
+        // 現在のページのHTMLを再取得してスクリプトが変わってないか確認
+        const res = await fetch(window.location.href, { cache: 'no-cache' });
+        if (!res.ok)
+            return;
+        const html = await res.text();
+        const hash = await sha256(html);
+        if (!currentScriptHash) {
+            currentScriptHash = hash; // 初回は記録だけ
+            return;
+        }
+        if (hash !== currentScriptHash) {
+            addLog('globalLog', 'アップデート検出、リロードします...', 'success');
+            setTimeout(() => window.location.reload(), 1000);
+        }
+    }
+    catch {
+        // ネットワーク不通なら無視
+    }
+}
+// ============================================================
 // WebSocket
 // ============================================================
 function connect() {
@@ -147,8 +172,11 @@ function connect() {
     ws.onclose = () => {
         $('statusDot').classList.remove('connected');
         $('statusText').textContent = '切断';
-        addLog('globalLog', '切断、3秒後に再接続...', 'error');
-        setTimeout(connect, 3000);
+        addLog('globalLog', '切断、アップデート確認中...', 'error');
+        checkForUpdate().then(() => {
+            addLog('globalLog', '3秒後に再接続...', 'info');
+            setTimeout(connect, 3000);
+        });
     };
     ws.onerror = () => { addLog('globalLog', '接続エラー', 'error'); };
 }
@@ -279,7 +307,7 @@ function handlePacket(packet) {
                 pendingTransactions = tmpl.transactions || [];
                 $('chainHeight').textContent = String(chainHeight);
                 $('difficulty').textContent = String(currentDifficulty);
-                addLog('miningLog', `テンプレート: height=${chainHeight} tx=${pendingTransactions.length} diff=${currentDifficulty}`, 'info');
+                addLog('miningLog', `テンプレート: height=${chainHeight} tx=${pendingTransactions.length} diff=${currentDifficulty} reward=${weiToBtr(latestReward, 2)} BTR`, 'info');
                 if (isMining)
                     startMineWorker();
             }
@@ -294,7 +322,7 @@ function handlePacket(packet) {
             $('chainHeight').textContent = String(chainHeight);
             $('difficulty').textContent = String(currentDifficulty);
             $('minedBlocks').textContent = String(minedCount);
-            addLog('miningLog', `ブロック承認! height=${chainHeight}`, 'success');
+            addLog('miningLog', `ブロック承認! height=${chainHeight} reward=${weiToBtr(latestReward, 2)} BTR`, 'success');
             if (wallet)
                 requestBalance();
             // 自動スワップ
@@ -787,29 +815,98 @@ function startMineWorker() {
 // ============================================================
 // QRコード
 // ============================================================
-function showQR() {
+function loadQRious() {
+    return new Promise((resolve, reject) => {
+        if (typeof window.QRious !== 'undefined') {
+            resolve();
+            return;
+        }
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js';
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('QRious読み込み失敗'));
+        document.head.appendChild(s);
+    });
+}
+async function showQR() {
     if (!wallet) {
         addLog('globalLog', 'ウォレットがありません', 'error');
         return;
     }
-    const qrDiv = $('qrCode');
-    qrDiv.innerHTML = '';
-    qrDiv.style.display = 'block';
+    const modal = $('qrModal');
+    const canvasDiv = $('qrCanvas');
+    const infoDiv = $('qrInfo');
+    canvasDiv.innerHTML = '<div style="color:var(--text2);font-size:12px">生成中...</div>';
+    infoDiv.innerHTML = '';
+    modal.style.display = 'flex';
     const baseURL = window.location.origin + window.location.pathname;
-    const amountStr = $val('qrAmount') || '0';
-    const qrData = `${baseURL}${wallet.address}/${amountStr}`;
-    if (typeof window.QRious === 'undefined') {
-        qrDiv.innerHTML = `<div style="padding:20px;word-break:break-all">${qrData}</div>`;
-        return;
+    const amountStr = $val('qrAmount');
+    let qrData = `${baseURL}?user=${wallet.address}`;
+    if (amountStr && parseFloat(amountStr) > 0) {
+        qrData += `&value=${amountStr}`;
     }
-    const qr = new window.QRious({ element: document.createElement('canvas'), value: qrData, size: 200 });
-    qrDiv.appendChild(qr.image);
-    const urlDiv = document.createElement('div');
-    urlDiv.style.cssText = 'margin-top:10px;font-size:10px;word-break:break-all;color:var(--text2)';
-    urlDiv.textContent = qrData;
-    qrDiv.appendChild(urlDiv);
+    try {
+        await loadQRious();
+        canvasDiv.innerHTML = '';
+        const canvas = document.createElement('canvas');
+        new window.QRious({ element: canvas, value: qrData, size: 220, background: '#ffffff', foreground: '#000000' });
+        canvasDiv.appendChild(canvas);
+    }
+    catch {
+        canvasDiv.innerHTML = '<div style="color:var(--red);font-size:12px">QR生成失敗</div>';
+    }
+    // アドレスと金額情報
+    let info = wallet.address;
+    if (amountStr && parseFloat(amountStr) > 0) {
+        info += `<br><span style="color:var(--accent)">${amountStr} BTR</span>`;
+    }
+    info += `<br><span style="font-size:9px;opacity:0.6">${qrData}</span>`;
+    infoDiv.innerHTML = info;
 }
-function hideQR() { $('qrCode').style.display = 'none'; }
+function hideQR() {
+    $('qrModal').style.display = 'none';
+}
+// ============================================================
+// URLパラメータ解析 → 送金画面に自動遷移
+// ============================================================
+function handleURLParams() {
+    const params = new URLSearchParams(window.location.search);
+    const user = params.get('user');
+    if (!user)
+        return;
+    applyPaymentParams(user, params.get('value') || '');
+    window.history.replaceState({}, '', window.location.pathname);
+}
+// 任意のURLから ?user= &value= を抽出して送金画面に反映
+// f5.si でも .com でも、パラメータさえあれば動く
+function parsePaymentURL(urlStr) {
+    try {
+        // 完全なURLの場合
+        const url = new URL(urlStr);
+        const user = url.searchParams.get('user');
+        if (user)
+            return { user, value: url.searchParams.get('value') || '' };
+    }
+    catch {
+        // URLじゃない場合（0x...アドレス直書きなど）
+        if (urlStr.startsWith('0x') && urlStr.length >= 42) {
+            return { user: urlStr.slice(0, 42), value: '' };
+        }
+    }
+    return null;
+}
+function applyPaymentParams(user, value) {
+    switchTab('send');
+    const sendToInput = $('sendTo');
+    if (sendToInput)
+        sendToInput.value = user;
+    if (value && parseFloat(value) > 0) {
+        const sendAmountInput = $('sendAmount');
+        if (sendAmountInput)
+            sendAmountInput.value = value;
+    }
+    addLog('globalLog', `送金先を設定: ${user.slice(0, 14)}...${value ? ' / ' + value + ' BTR' : ''}`, 'info');
+}
 // ============================================================
 // DOM構築
 // ============================================================
@@ -874,13 +971,6 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
       <label>秘密鍵インポート</label><input type="password" id="importKey" placeholder="hex 64文字">
       <button class="btn secondary" id="btnImport">インポート</button>
     </div>
-    <div class="card">
-      <h2>QRコード</h2>
-      <label>金額 (任意)</label><input type="number" id="qrAmount" placeholder="0" step="0.1" min="0">
-      <button class="btn secondary" id="btnShowQR">QRコード表示</button><div class="gap"></div>
-      <button class="btn secondary" id="btnHideQR" style="display:none">非表示</button>
-      <div id="qrCode" style="display:none;margin-top:12px;text-align:center"></div>
-    </div>
   </div>
   <div class="panel" id="panel-send">
     <div class="card"><h2>BTR送金</h2>
@@ -894,6 +984,12 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
       <label>宛先アドレス</label><input type="text" id="tokenSendTo" placeholder="0x...">
       <label>金額</label><input type="number" id="tokenSendAmount" placeholder="0" step="0.1" min="0">
       <button class="btn" id="btnTokenSend">送金</button>
+    </div>
+    <div class="card">
+      <h2>受取用QRコード</h2>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px">自分のアドレスをQRコードで表示します。相手がスキャンすると送金画面に飛びます。</div>
+      <label>金額 (任意)</label><input type="number" id="qrAmount" placeholder="指定しない場合は空欄" step="0.1" min="0">
+      <button class="btn secondary" id="btnShowQR">QRコード生成</button>
     </div>
   </div>
   <div class="panel" id="panel-mining">
@@ -947,6 +1043,14 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
     <div class="card"><h2>ログ</h2><div class="log-box" id="globalLog"></div></div>
   </div>
 </main>
+<div id="qrModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;justify-content:center;align-items:center">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;max-width:360px;width:90%;position:relative">
+    <button id="btnCloseQR" style="position:absolute;top:12px;right:16px;background:none;border:none;color:var(--text);font-size:24px;cursor:pointer;padding:4px;line-height:1">✕</button>
+    <h2 style="font-family:var(--mono);font-size:16px;color:var(--accent);margin-bottom:16px;text-align:center">受取用QRコード</h2>
+    <div id="qrCanvas" style="display:flex;justify-content:center;margin-bottom:16px;min-height:220px;align-items:center"></div>
+    <div id="qrInfo" style="font-family:var(--mono);font-size:10px;color:var(--text2);word-break:break-all;text-align:center;line-height:1.6"></div>
+  </div>
+</div>
 `;
 }
 // ============================================================
@@ -1007,7 +1111,12 @@ function bindEvents() {
     $('tokenSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter')
         searchToken(); });
     $('btnShowQR').addEventListener('click', () => showQR());
-    $('btnHideQR').addEventListener('click', () => hideQR());
+    $('btnCloseQR').addEventListener('click', () => hideQR());
+    // モーダル背景クリックでも閉じる
+    $('qrModal').addEventListener('click', (e) => {
+        if (e.target.id === 'qrModal')
+            hideQR();
+    });
 }
 // ============================================================
 // フォント読み込み
@@ -1027,6 +1136,9 @@ async function init() {
     bindEvents();
     await loadWallet();
     connect();
+    handleURLParams();
+    // 初回のスクリプトハッシュを記録
+    checkForUpdate();
     setInterval(() => {
         if (wallet && ws && ws.readyState === WebSocket.OPEN) {
             requestBalance();
