@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "outDir": "./dist",
+    "outDir": "serversend/dist",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
@@ -15,5 +15,5 @@
     "moduleResolution": "bundler"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "serversend/dist"]
 }
