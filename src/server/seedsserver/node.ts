@@ -3,6 +3,39 @@
 // ランチャーからforkされて動く
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
+/*
+[20:03:21] ブロック発見! nonce=825173357329658 hash=000004eb68ce1dd1...
+[20:03:22] 難易度UP: diff=6 (height=16)
+[20:03:22] 新ブロック検出 #16 by 不明 → テンプレート再取得
+[20:03:22] ブロック承認! height=16 reward=45 BTR
+[20:03:22] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:03:22] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:03:22] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:12] 乱数更新: b08f95f583b706ca...
+[20:04:37] 難易度DOWN: diff=2 (height=11)
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:37] 難易度DOWN: diff=3 (height=12)
+[20:04:37] 難易度UP: diff=4 (height=13)
+[20:04:37] 難易度UP: diff=5 (height=14)
+[20:04:37] 難易度UP: diff=6 (height=15)
+[20:04:37] 難易度UP: diff=7 (height=16)
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:04:37] テンプレート: height=16 tx=0 diff=6 reward=45 BTR
+[20:05:19] ブロック発見! nonce=394625456520911 hash=000000d8082ca6be...
+[20:05:19] 難易度UP: diff=7 (height=17)
+[20:05:19] 新ブロック検出 #17 by 不明 → テンプレート再取得
+[20:05:19] ブロック承認! height=17 reward=68 BTR
+[20:05:19] ブロック拒否: 難易度不足: ブロック=6, ノード要求=7
+[20:05:19] テンプレート: height=17 tx=0 diff=7 reward=68 BTR
+[20:05:19] テンプレート: height=17 tx=0 diff=7 reward=68 BTR
+[20:05:19] テンプレート: height=17 tx=0 diff=7 reward=68 BTR
+[20:05:19] テンプレート: height=17 tx=0 diff=7 reward=68 BTR
+ね　新ノードが参加したときこういう風にバグるから、　ノードは同期中はほかの通信を遮断するというか　クライアントからは拒否するようにする
+これをやったら堅牢性がかなり上がると思う　ノードは起動してから最初の数分は同期モードで動いて、　その間はクライアントからの通信を拒否する　同期が完了したら通常モードに切り替える　みたいな感じでどうでしょうか？
+*/
 
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
