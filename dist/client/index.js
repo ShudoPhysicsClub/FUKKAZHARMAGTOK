@@ -1064,7 +1064,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
   <div class="panel" id="panel-mining">
     <div class="card"><h2>マイニング</h2>
       <div class="mining-stats">
-        <div class="stat-box"><div class="label">ステータス</div><div class="value" id="miningStatus">停止中</div></div>
+        <div class="stat-box"><div class="label">ステータス</div><div class="value" id="miningStatus">null</div></div>
         <div class="stat-box"><div class="label">ハッシュレート</div><div class="value hashrate" id="hashRate">0 H/s</div></div>
         <div class="stat-box"><div class="label">難易度</div><div class="value" id="difficulty">-</div></div>
         <div class="stat-box"><div class="label">採掘ブロック</div><div class="value" id="minedBlocks">0</div></div>
