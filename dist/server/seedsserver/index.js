@@ -922,6 +922,11 @@ function handleNodePacket(nodeId, packet) {
             }
             break;
         }
+        case 'difficulty_update': {
+            broadcastToClients(packet);
+            log('TCP', `難易度更新ブロードキャスト: diff=${packet.data?.difficulty}`);
+            break;
+        }
         case 'balance':
         case 'chain':
         case 'chain_chunk':

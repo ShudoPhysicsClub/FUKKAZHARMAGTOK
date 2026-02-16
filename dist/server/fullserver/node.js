@@ -401,10 +401,11 @@ async function verifyTransaction(tx) {
     try {
         const valid = await Ed25519.verify(hexToBytes(signature), new TextEncoder().encode(message), hexToBytes(tx.publicKey));
         if (!valid)
-            return { valid: false, error: '署名が無効' };
+            return { valid: false, error: `署名が無効 (from=${tx.from.slice(0, 10)}..., pubkey=${tx.publicKey.slice(0, 16)}..., sig=${signature.slice(0, 16)}...)` };
     }
-    catch {
-        return { valid: false, error: '署名検証エラー' };
+    catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        return { valid: false, error: `署名検証エラー: ${detail} (pubkey=${tx.publicKey.slice(0, 16)}..., sig長=${signature.length})` };
     }
     // 3. タイムスタンプ
     if (Math.abs(Date.now() - tx.timestamp) > CONFIG.TIMESTAMP_TOLERANCE) {
@@ -679,29 +680,38 @@ function verifyBlock(block) {
     if (block.difficulty < 1 || !Number.isInteger(block.difficulty)) {
         return { valid: false, error: `難易度が不正: ${block.difficulty}` };
     }
+    // 難易度チェック: ブロックの難易度がノードの現在難易度以上であること
+    // （タイマー降下でズレる場合があるので、高い分にはOK）
+    if (block.difficulty < currentDifficulty) {
+        return { valid: false, error: `難易度不足: ブロック=${block.difficulty}, ノード要求=${currentDifficulty}` };
+    }
     const expectedHash = computeBlockHash(block);
     if (block.hash !== expectedHash) {
-        return { valid: false, error: 'ブロックハッシュ不一致' };
+        return { valid: false, error: `ブロックハッシュ不一致 (計算=${expectedHash.slice(0, 16)}..., ブロック=${block.hash.slice(0, 16)}...)` };
     }
     if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
-        return { valid: false, error: 'PoW条件を満たしていない' };
+        return { valid: false, error: `PoW条件を満たしていない (先頭0が${block.difficulty}個必要)` };
     }
     if (chain.length > 0) {
         const prev = chain[chain.length - 1];
         if (block.previousHash !== prev.hash) {
-            return { valid: false, error: 'previousHash不一致' };
+            return { valid: false, error: `previousHash不一致 (期待=${prev.hash.slice(0, 16)}..., 受信=${block.previousHash.slice(0, 16)}...)` };
         }
         if (block.height !== prev.height + 1) {
-            return { valid: false, error: 'height不一致' };
+            return { valid: false, error: `height不一致 (期待=${prev.height + 1}, 受信=${block.height})` };
         }
+    }
+    // タイムスタンプチェック（未来のブロックを拒否）
+    if (block.timestamp > Date.now() + 30000) {
+        return { valid: false, error: 'タイムスタンプが未来すぎる' };
     }
     const size = Buffer.byteLength(JSON.stringify(block.transactions));
     if (size > CONFIG.MAX_BLOCK_SIZE) {
-        return { valid: false, error: 'ブロックサイズ超過' };
+        return { valid: false, error: `ブロックサイズ超過 (${size} > ${CONFIG.MAX_BLOCK_SIZE})` };
     }
     // 報酬チェック (Wei文字列比較)
     if (compareWei(block.reward, CONFIG.BLOCK_REWARD_MIN) < 0 || compareWei(block.reward, CONFIG.BLOCK_REWARD_MAX) > 0) {
-        return { valid: false, error: '報酬が範囲外' };
+        return { valid: false, error: `報酬が範囲外 (${block.reward.slice(0, 20)}...)` };
     }
     return { valid: true };
 }
@@ -759,6 +769,7 @@ function adjustDifficulty() {
     const totalTime = recent[recent.length - 1].timestamp - recent[0].timestamp;
     const avgTime = totalTime / (recent.length - 1);
     const targetMs = CONFIG.BLOCK_TIME * 1000;
+    const oldDifficulty = currentDifficulty;
     if (avgTime < targetMs * 0.85) {
         currentDifficulty++;
         log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
@@ -766,6 +777,18 @@ function adjustDifficulty() {
     else if (avgTime > targetMs * 1.15 && currentDifficulty > 1) {
         currentDifficulty--;
         log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
+    }
+    // 難易度が変わったらクライアントに通知
+    if (currentDifficulty !== oldDifficulty) {
+        sendToSeed({
+            type: 'difficulty_update',
+            data: {
+                difficulty: currentDifficulty,
+                height: chain.length,
+                previousHash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
+                reward: calculateReward(chain.length),
+            }
+        });
     }
 }
 // ============================================================

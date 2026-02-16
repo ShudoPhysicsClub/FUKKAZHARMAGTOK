@@ -681,7 +681,7 @@ function startMining() {
     if (!wallet)
         return;
     isMining = true;
-    $('btnMine').textContent = 'マイニング停止';
+    $('btnMine').textContent = '⏸ マイニング停止';
     addLog('miningLog', 'マイニング開始', 'success');
     const select = document.getElementById('miningTarget');
     miningTargetToken = select ? select.value : '';
@@ -697,7 +697,7 @@ function stopMining() {
         clearInterval(window.__hashRateTimer);
         window.__hashRateTimer = null;
     }
-    $('btnMine').textContent = 'マイニング開始';
+    $('btnMine').textContent = '▶ マイニング開始';
     $('hashRate').textContent = '0 H/s';
     addLog('miningLog', 'マイニング停止', 'info');
 }
