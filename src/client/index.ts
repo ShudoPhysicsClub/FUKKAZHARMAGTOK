@@ -1,5 +1,5 @@
 // ============================================================
-// BTR (Buturi Coin) - クライアント BigInt完全対応版
+// BTR (Buturi Coin) - クライアント v2.1.0 BigInt完全対応版
 // crypto.ts の Ed25519 を使用
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
@@ -401,6 +401,17 @@ function handlePacket(packet: Packet): void {
 
     case 'error':
       addLog('globalLog', `エラー: ${packet.data.message}`, 'error');
+      break;
+
+    case 'sync_busy':
+      addLog('globalLog', `ノード同期中: ${packet.data?.message || 'しばらくお待ちください'}`, 'info');
+      // 3秒後にリトライ
+      setTimeout(() => {
+        if (wallet) {
+          send({ type: 'get_balance', data: { address: wallet.address } });
+          send({ type: 'get_height' });
+        }
+      }, 3000);
       break;
   }
 }

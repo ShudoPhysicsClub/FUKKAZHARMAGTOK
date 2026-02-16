@@ -1,5 +1,6 @@
 // ============================================================
-// BTR (Buturi Coin) - フルノード BigInt完全対応版
+// BTR (Buturi Coin) - フルノード v2.1.0 BigInt完全対応版
+// LWMA難易度調整 / 同期中通信遮断 / チェーンベース難易度検証
 // ランチャーからforkされて動く
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
@@ -258,7 +259,14 @@ const CONFIG = {
     TOKEN_RENAME_FEE: (500n * WEI_PER_BTR).toString(), // 500 BTR
     TIMESTAMP_TOLERANCE: 10 * 60 * 1000,
     MAX_BLOCK_SIZE: 3 * 1024 * 1024,
-    DIFFICULTY_WINDOW: 10,
+    // === LWMA難易度調整 ===
+    DIFFICULTY_WINDOW: 20, // 過去20ブロックで調整
+    INITIAL_DIFFICULTY: 6, // 初期難易度
+    MIN_DIFFICULTY: 5, // 最低難易度
+    LWMA_CLAMP_MIN: 30, // 外れ値フィルタ下限 (秒)
+    LWMA_CLAMP_MAX: 900, // 外れ値フィルタ上限 (15分)
+    LWMA_DAMPING: 3, // ダンピング係数 (変化量を1/3に)
+    DIFFICULTY_ADJUST_START: 20, // 調整開始ブロック高さ
     ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
 };
 // ============================================================
@@ -347,7 +355,7 @@ const ammPools = new Map();
 const pendingTxs = [];
 let commonRandom = '';
 let totalMined = "0"; // Wei文字列
-let currentDifficulty = 1;
+let currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
 // ============================================================
 // アカウント管理
 // ============================================================
@@ -375,13 +383,13 @@ function createGenesisBlock() {
         previousHash: '0x' + '0'.repeat(64),
         timestamp: Date.now(),
         nonce: 0,
-        difficulty: 1,
+        difficulty: CONFIG.INITIAL_DIFFICULTY,
         miner: '0x' + '0'.repeat(40),
         reward: "0",
         transactions: [],
         hash: '',
         config: CONFIG,
-        message: 'Foooooooooooooooooooo物理班最高!YEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEA BigInt Edition',
+        message: 'Foooooooooooooooooooo物理班最高!YEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEA BigInt+LWMA Edition v2.1.0',
     };
     block.hash = computeBlockHash(block);
     return block;
@@ -680,10 +688,15 @@ function verifyBlock(block) {
     if (block.difficulty < 1 || !Number.isInteger(block.difficulty)) {
         return { valid: false, error: `難易度が不正: ${block.difficulty}` };
     }
-    // 難易度チェック: ブロックの難易度がノードの現在難易度以上であること
-    // （タイマー降下でズレる場合があるので、高い分にはOK）
-    if (block.difficulty < currentDifficulty) {
-        return { valid: false, error: `難易度不足: ブロック=${block.difficulty}, ノード要求=${currentDifficulty}` };
+    // 最低難易度チェック（20ブロック以降はMIN_DIFFICULTYを要求）
+    if (chain.length >= CONFIG.DIFFICULTY_ADJUST_START && block.difficulty < CONFIG.MIN_DIFFICULTY) {
+        return { valid: false, error: `最低難易度未満: ブロック=${block.difficulty}, 最低=${CONFIG.MIN_DIFFICULTY}` };
+    }
+    // チェーンベースで期待される難易度を計算（ブロック単位調整のみ）
+    const expectedDiff = calculateDifficultyFromChain(chain);
+    // ブロックの難易度は期待値以上であること（高い分にはOK）
+    if (block.difficulty < expectedDiff && chain.length > 0) {
+        return { valid: false, error: `難易度不足: ブロック=${block.difficulty}, 期待>=${expectedDiff} (LWMA計算)` };
     }
     const expectedHash = computeBlockHash(block);
     if (block.hash !== expectedHash) {
@@ -699,16 +712,6 @@ function verifyBlock(block) {
         }
         if (block.height !== prev.height + 1) {
             return { valid: false, error: `height不一致 (期待=${prev.height + 1}, 受信=${block.height})` };
-        }
-        // 難易度降下の正当性チェック: 前ブロックより難易度が低い場合、
-        // 1段下げるごとに BLOCK_TIME × 1.5 以上の経過が必要
-        if (block.difficulty < prev.difficulty) {
-            const drop = prev.difficulty - block.difficulty;
-            const elapsed = block.timestamp - prev.timestamp;
-            const requiredMs = drop * CONFIG.BLOCK_TIME * 1.5 * 1000 - 10000;
-            if (elapsed < requiredMs) {
-                return { valid: false, error: `不正な難易度低下: diff ${prev.difficulty}→${block.difficulty} には${(requiredMs / 1000).toFixed(0)}秒必要, 経過=${(elapsed / 1000).toFixed(0)}秒` };
-            }
         }
         // 難易度は1ブロックで最大+1まで（急激な上昇を防止）
         if (block.difficulty > prev.difficulty + 1) {
@@ -757,16 +760,17 @@ function applyBlock(block) {
         }
     }
     chain.push(block);
-    // ブロックファイル保存
-    try {
-        const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
-        writeFileSync(filename, JSON.stringify(block));
-    }
-    catch (e) {
-        log('Save', `ブロック保存失敗: ${e}`);
+    // ブロックファイル保存 (rebuilding中はスキップ、後でsaveStateがまとめて保存)
+    if (!isRebuilding) {
+        try {
+            const filename = `./chain/${block.height.toString().padStart(64, '0')}.json`;
+            writeFileSync(filename, JSON.stringify(block));
+        }
+        catch (e) {
+            log('Save', `ブロック保存失敗: ${e}`);
+        }
     }
     adjustDifficulty();
-    resetDifficultyDropTimer();
     // pending から適用済みTxを除去
     const txSigs = new Set(block.transactions.map(tx => tx.signature));
     const remaining = pendingTxs.filter(tx => !txSigs.has(tx.signature));
@@ -774,26 +778,71 @@ function applyBlock(block) {
     pendingTxs.push(...remaining);
 }
 // ============================================================
-// 難易度調整
+// 難易度調整 (LWMA: 線形加重移動平均)
+//   - 過去20ブロックの時間を重み付け平均（直近ほど重い）
+//   - 外れ値フィルタ: 30秒~15分にクランプ
+//   - ダンピング: 変化量を1/3に抑制
+//   - 最低難易度: CONFIG.MIN_DIFFICULTY
+//   - 調整開始: CONFIG.DIFFICULTY_ADJUST_START ブロック以降
 // ============================================================
+function calculateDifficultyFromChain(c) {
+    // 20ブロック未満の場合は初期難易度
+    if (c.length < CONFIG.DIFFICULTY_ADJUST_START + 1) {
+        return CONFIG.INITIAL_DIFFICULTY;
+    }
+    // ジェネシス(height=0)を除外した範囲でwindowを計算
+    const nonGenesis = c.slice(1); // height 1以降
+    const window = Math.min(CONFIG.DIFFICULTY_WINDOW, nonGenesis.length - 1);
+    if (window < 2)
+        return CONFIG.INITIAL_DIFFICULTY;
+    const recent = nonGenesis.slice(-window - 1); // window+1個取って間隔を出す
+    // LWMA: 重み付き平均ブロック時間を計算
+    let weightedSum = 0;
+    let weightTotal = 0;
+    for (let i = 1; i < recent.length; i++) {
+        let interval = (recent[i].timestamp - recent[i - 1].timestamp) / 1000; // 秒
+        // 外れ値フィルタ: クランプ
+        interval = Math.max(CONFIG.LWMA_CLAMP_MIN, Math.min(CONFIG.LWMA_CLAMP_MAX, interval));
+        const weight = i; // 直近ほど重い (1, 2, 3, ..., window)
+        weightedSum += interval * weight;
+        weightTotal += weight;
+    }
+    const lwmaAvg = weightedSum / weightTotal; // 加重平均ブロック時間(秒)
+    const target = CONFIG.BLOCK_TIME; // 180秒
+    // 理想の変動値: 正なら遅すぎ(難易度下げ)、負なら速すぎ(難易度上げ)
+    const ratio = lwmaAvg / target;
+    const currentDiff = c[c.length - 1].difficulty;
+    let newDiff;
+    if (ratio < 0.85) {
+        // 速すぎ → 難易度UP (ダンピング適用)
+        const change = Math.ceil((1 / ratio - 1) / CONFIG.LWMA_DAMPING);
+        newDiff = currentDiff + Math.max(1, change);
+    }
+    else if (ratio > 1.15) {
+        // 遅すぎ → 難易度DOWN (ダンピング適用)
+        const change = Math.ceil((ratio - 1) / CONFIG.LWMA_DAMPING);
+        newDiff = currentDiff - Math.max(1, change);
+    }
+    else {
+        newDiff = currentDiff;
+    }
+    // 最低難易度制限
+    newDiff = Math.max(CONFIG.MIN_DIFFICULTY, newDiff);
+    // 1ブロックで最大+1しか上がらない（急激な上昇防止）
+    newDiff = Math.min(currentDiff + 1, newDiff);
+    return newDiff;
+}
 function adjustDifficulty() {
-    if (chain.length < CONFIG.DIFFICULTY_WINDOW + 1)
-        return;
-    const recent = chain.slice(-CONFIG.DIFFICULTY_WINDOW);
-    const totalTime = recent[recent.length - 1].timestamp - recent[0].timestamp;
-    const avgTime = totalTime / (recent.length - 1);
-    const targetMs = CONFIG.BLOCK_TIME * 1000;
+    const newDiff = calculateDifficultyFromChain(chain);
     const oldDifficulty = currentDifficulty;
-    if (avgTime < targetMs * 0.85) {
-        currentDifficulty++;
-        log('Difficulty', `難易度UP: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
-    }
-    else if (avgTime > targetMs * 1.15 && currentDifficulty > 1) {
-        currentDifficulty--;
-        log('Difficulty', `難易度DOWN: ${currentDifficulty} (平均 ${(avgTime / 1000).toFixed(1)}秒)`);
-    }
-    // 難易度が変わったらクライアントに通知
+    currentDifficulty = newDiff;
+    // rebuildState中は通知しない（大量送信防止）
+    if (isRebuilding)
+        return;
     if (currentDifficulty !== oldDifficulty) {
+        const dir = currentDifficulty > oldDifficulty ? 'UP' : 'DOWN';
+        log('Difficulty', `難易度${dir}: ${currentDifficulty} (前=${oldDifficulty}, チェーン高=${chain.length})`);
+        // クライアントに通知
         sendToSeed({
             type: 'difficulty_update',
             data: {
@@ -804,39 +853,6 @@ function adjustDifficulty() {
             }
         });
     }
-}
-// ============================================================
-// 難易度タイマー降下（ブロックが掘れない時に自動で難易度を下げる）
-// BLOCK_TIME × 1.5 経過ごとに難易度 -1
-// ============================================================
-let difficultyDropTimer = null;
-function resetDifficultyDropTimer() {
-    if (difficultyDropTimer)
-        clearTimeout(difficultyDropTimer);
-    const dropInterval = CONFIG.BLOCK_TIME * 1.5 * 1000; // 3分 × 1.5 = 4.5分
-    const scheduleNext = () => {
-        difficultyDropTimer = setTimeout(() => {
-            if (currentDifficulty > 1) {
-                currentDifficulty--;
-                log('Difficulty', `タイマー降下: diff=${currentDifficulty} (${CONFIG.BLOCK_TIME * 1.5}秒間ブロックなし)`);
-                // クライアントに通知
-                sendToSeed({
-                    type: 'difficulty_update',
-                    data: {
-                        difficulty: currentDifficulty,
-                        height: chain.length,
-                        previousHash: chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64),
-                        reward: calculateReward(chain.length),
-                    }
-                });
-            }
-            // まだ1より大きければ再スケジュール
-            if (currentDifficulty > 1) {
-                scheduleNext();
-            }
-        }, dropInterval);
-    };
-    scheduleNext();
 }
 // ============================================================
 // ブロック報酬算出
@@ -875,16 +891,19 @@ function selectChain(otherChain) {
     }
     return false;
 }
+let isRebuilding = false;
 function rebuildState(newChain) {
     chain.length = 0;
     accounts.clear();
     tokens.clear();
     ammPools.clear();
     totalMined = "0";
-    currentDifficulty = 1;
+    currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
+    isRebuilding = true;
     for (const block of newChain) {
         applyBlock(block);
     }
+    isRebuilding = false;
 }
 // ============================================================
 // 永続化
@@ -1003,6 +1022,9 @@ function finishSync() {
         clearTimeout(syncTimer);
         syncTimer = null;
     }
+    // チェーンからLWMAで正しい難易度を再計算
+    currentDifficulty = calculateDifficultyFromChain(chain);
+    log('Sync', `難易度をチェーンから再計算: diff=${currentDifficulty}`);
     saveState();
     try {
         const meta = { chainLength: chain.length, accountCount: accounts.size, tokenCount: tokens.size, lastSaved: Date.now() };
@@ -1115,6 +1137,31 @@ function sendToSeed(packet) {
 // パケットハンドリング
 // ============================================================
 async function handlePacket(packet) {
+    // 同期中はクライアント向けリクエストとブロードキャストを拒否（ノード間同期通信は通す）
+    const blockedDuringSyncWithResponse = new Set([
+        'get_balance', 'get_height', 'get_block_template', 'get_chain',
+        'get_token', 'get_tokens_list', 'get_rate', 'get_mempool',
+        'get_recent_transactions', 'get_block', 'tx', 'admin_status'
+    ]);
+    const blockedDuringSyncSilent = new Set([
+        'block_broadcast', 'tx_broadcast'
+    ]);
+    if (isSyncing) {
+        if (blockedDuringSyncWithResponse.has(packet.type)) {
+            const clientId = packet.data?.clientId;
+            if (clientId) {
+                sendToSeed({
+                    type: 'sync_busy',
+                    data: { clientId, message: 'ノードは同期中です。しばらくお待ちください。' }
+                });
+            }
+            return;
+        }
+        if (blockedDuringSyncSilent.has(packet.type)) {
+            // 同期中はブロードキャストを無視（同期完了後に正しいチェーンが確定する）
+            return;
+        }
+    }
     switch (packet.type) {
         case 'ping':
             sendToSeed({ type: 'pong' });
@@ -1499,8 +1546,9 @@ function startPeriodicTasks() {
 // ============================================================
 function main() {
     console.log('========================================');
-    console.log('  BTR (Buturi Coin) Full Node v2.0.1');
+    console.log('  BTR (Buturi Coin) Full Node v2.1.0');
     console.log('  BigInt Edition (Wei = 10^18)');
+    console.log('  LWMA Difficulty Adjustment');
     console.log('========================================');
     loadState();
     // 初回seeds.jsonハッシュ記録
@@ -1512,7 +1560,6 @@ function main() {
     catch { }
     connectToSeed();
     startPeriodicTasks();
-    resetDifficultyDropTimer();
     const seeds = loadSeeds();
     log('Init', `フルノード起動完了 (BigInt版)`);
     log('Init', `チェーン高さ: ${chain.length}, 難易度: ${currentDifficulty}`);
