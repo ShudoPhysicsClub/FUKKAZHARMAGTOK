@@ -1052,6 +1052,7 @@ function handleClientPacket(clientId, packet) {
     log('WSS', `パケット受信: ${packet.type} from ${clientId}`);
     switch (packet.type) {
         case 'mine':
+        case 'block_broadcast':
             broadcastToNodes({ type: 'block_broadcast', data: { ...packet.data, minerId: clientId } });
             break;
         case 'tx':
