@@ -234,15 +234,18 @@ function handlePacket(packet: Packet): void {
       if (blk.difficulty) currentDifficulty = blk.difficulty;
       $('chainHeight').textContent = String(chainHeight);
       $('difficulty').textContent = String(currentDifficulty);
-      // 自分のブロックでもWorkerは再起動必要
-      addLog('globalLog', `新ブロック #${blk.height} diff=${currentDifficulty}`, 'success');
-      if (wallet) requestBalance();
+      const minerAddr = blk.miner ? blk.miner.slice(0, 10) + '...' : '不明';
+      const isMe = wallet && blk.miner === wallet.address;
+      const reward = blk.reward ? weiToBtr(String(blk.reward), 2) : '?';
+      addLog('globalLog', `新ブロック #${blk.height} by ${isMe ? 'あなた' : minerAddr} (${reward} BTR, diff=${currentDifficulty})`, 'success');
       if (isMining) {
+        addLog('miningLog', `新ブロック検出 #${blk.height} by ${isMe ? 'あなた' : minerAddr} → テンプレート再取得`, 'info');
         cleanupWorker();
         miningStartTime = Date.now();
         totalHashes = 0;
         requestBlockTemplate();
       }
+      if (wallet) requestBalance();
       break;
     }
 
@@ -342,12 +345,15 @@ function handlePacket(packet: Packet): void {
 
     case 'difficulty_update': {
       const upd = packet.data;
+      const oldDiff = currentDifficulty;
       currentDifficulty = upd.difficulty || currentDifficulty;
       chainHeight = upd.height || chainHeight;
       latestBlockHash = upd.previousHash || latestBlockHash;
       latestReward = String(upd.reward || latestReward);
       $('difficulty').textContent = String(currentDifficulty);
-      addLog('miningLog', `難易度タイマー降下: diff=${currentDifficulty}`, 'info');
+      $('chainHeight').textContent = String(chainHeight);
+      const dir = currentDifficulty > oldDiff ? '難易度UP' : currentDifficulty < oldDiff ? '難易度DOWN' : '難易度更新';
+      addLog('miningLog', `${dir}: diff=${currentDifficulty} (height=${chainHeight})`, 'info');
       if (isMining) {
         cleanupWorker();
         miningStartTime = Date.now();
