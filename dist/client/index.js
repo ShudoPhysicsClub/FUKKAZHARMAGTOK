@@ -30,6 +30,8 @@ let totalHashes = 0;
 let latestBlockHash = '0'.repeat(64);
 let latestReward = (100n * WEI_PER_BTR).toString();
 let pendingTransactions = [];
+let lastProcessedHash = ''; // 重複ブロック排除用
+let lastProcessedTime = 0;
 // ============================================================
 // Wei変換ヘルパー
 // ============================================================
@@ -231,6 +233,14 @@ function handlePacket(packet) {
             const blk = packet.data;
             if (!blk)
                 break;
+            // 重複排除: 同じハッシュのブロックは無視
+            const blkHash = blk.hash || '';
+            if (blkHash && blkHash === lastProcessedHash && Date.now() - lastProcessedTime < 5000)
+                break;
+            if (blkHash) {
+                lastProcessedHash = blkHash;
+                lastProcessedTime = Date.now();
+            }
             const newHeight = (blk.height || 0) + 1;
             if (newHeight > chainHeight)
                 chainHeight = newHeight;
@@ -303,6 +313,12 @@ function handlePacket(packet) {
         case 'block_template': {
             const tmpl = packet.data;
             if (tmpl) {
+                // 重複テンプレート抑制: 同じheight+previousHashなら無視
+                const tmplKey = `${tmpl.height}:${tmpl.previousHash}`;
+                if (window.__lastTmplKey === tmplKey && Date.now() - (window.__lastTmplTime || 0) < 3000)
+                    break;
+                window.__lastTmplKey = tmplKey;
+                window.__lastTmplTime = Date.now();
                 chainHeight = tmpl.height || chainHeight;
                 latestBlockHash = tmpl.previousHash || latestBlockHash;
                 currentDifficulty = tmpl.difficulty || currentDifficulty;
@@ -318,6 +334,14 @@ function handlePacket(packet) {
         }
         case 'block_accepted': {
             const acc = packet.data;
+            // 重複排除: 同じハッシュの承認は無視
+            const accHash = acc.hash || '';
+            if (accHash && accHash === lastProcessedHash && Date.now() - lastProcessedTime < 5000)
+                break;
+            if (accHash) {
+                lastProcessedHash = accHash;
+                lastProcessedTime = Date.now();
+            }
             chainHeight = acc.height || chainHeight;
             latestBlockHash = acc.hash || latestBlockHash;
             currentDifficulty = acc.difficulty || currentDifficulty;
