@@ -378,10 +378,12 @@ function getTokenBalance(address, tokenAddress) {
 // ジェネシスブロック
 // ============================================================
 function createGenesisBlock() {
+    // タイムスタンプ固定: 全ノードで同一のジェネシスハッシュを保証
+    const GENESIS_TIMESTAMP = 1739700000000; // 2025-02-16T00:00:00Z 固定
     const block = {
         height: 0,
         previousHash: '0x' + '0'.repeat(64),
-        timestamp: Date.now(),
+        timestamp: GENESIS_TIMESTAMP,
         nonce: 0,
         difficulty: CONFIG.INITIAL_DIFFICULTY,
         miner: '0x' + '0'.repeat(40),

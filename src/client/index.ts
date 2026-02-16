@@ -385,6 +385,7 @@ function handlePacket(packet: Packet): void {
       break;
 
     case 'new_tx': {
+      // 新txをブロックに含めるためテンプレート再取得（3秒デバウンス）
       if (isMining) {
         if ((window as any).__newTxDebounce) clearTimeout((window as any).__newTxDebounce);
         (window as any).__newTxDebounce = setTimeout(() => {
@@ -394,7 +395,7 @@ function handlePacket(packet: Packet): void {
             totalHashes = 0;
             requestBlockTemplate();
           }
-        }, 500);
+        }, 3000);
       }
       break;
     }
@@ -405,13 +406,13 @@ function handlePacket(packet: Packet): void {
 
     case 'sync_busy':
       addLog('globalLog', `ノード同期中: ${packet.data?.message || 'しばらくお待ちください'}`, 'info');
-      // 3秒後にリトライ
+      // 5秒後にリトライ
       setTimeout(() => {
         if (wallet) {
           send({ type: 'get_balance', data: { address: wallet.address } });
           send({ type: 'get_height' });
         }
-      }, 3000);
+      }, 5000);
       break;
   }
 }
@@ -952,6 +953,13 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 @media(max-width:600px){.balance-display{font-size:28px}.mining-stats{grid-template-columns:1fr}nav button{padding:10px 14px;font-size:12px}}
 .gap{height:8px}
+.refresh-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:var(--accent);color:var(--bg);border:none;font-size:22px;cursor:pointer;z-index:500;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,255,136,0.3);transition:all .2s}
+.refresh-fab:hover{background:var(--accent2);transform:scale(1.1)}
+.refresh-fab.cooldown{background:var(--bg3);color:var(--text2);cursor:not-allowed;box-shadow:none}
+.refresh-fab.cooldown:hover{transform:none}
+.refresh-fab svg{width:24px;height:24px;transition:transform .4s}
+.refresh-fab:not(.cooldown):active svg{transform:rotate(360deg)}
+.refresh-timer{position:absolute;bottom:-6px;right:-6px;background:var(--bg2);border:2px solid var(--border);border-radius:10px;font-family:var(--mono);font-size:9px;color:var(--text2);padding:1px 5px;min-width:22px;text-align:center}
 </style>
 <header>
   <div class="logo">BTR<span>Buturi Coin</span></div>
@@ -1058,6 +1066,10 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
     <div id="qrInfo" style="font-family:var(--mono);font-size:10px;color:var(--text2);word-break:break-all;text-align:center;line-height:1.6"></div>
   </div>
 </div>
+<button id="refreshFab" class="refresh-fab" title="更新">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+  <span id="refreshTimer" class="refresh-timer" style="display:none"></span>
+</button>
 `;
 }
 
@@ -1112,6 +1124,37 @@ function bindEvents(): void {
   $('qrModal').addEventListener('click', (e) => {
     if ((e.target as HTMLElement).id === 'qrModal') hideQR();
   });
+
+  // 更新FABボタン（15秒クールダウン）
+  let refreshCooldown = false;
+  $('refreshFab').addEventListener('click', () => {
+    if (refreshCooldown) return;
+    // 更新実行
+    if (wallet && ws && ws.readyState === WebSocket.OPEN) {
+      requestBalance();
+      requestHeight();
+      addLog('globalLog', '手動更新', 'info');
+    }
+    // クールダウン開始
+    refreshCooldown = true;
+    const fab = $('refreshFab');
+    const timer = $('refreshTimer');
+    fab.classList.add('cooldown');
+    let remaining = 15;
+    timer.textContent = String(remaining);
+    timer.style.display = '';
+    const cd = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(cd);
+        refreshCooldown = false;
+        fab.classList.remove('cooldown');
+        timer.style.display = 'none';
+      } else {
+        timer.textContent = String(remaining);
+      }
+    }, 1000);
+  });
 }
 
 // ============================================================
@@ -1144,9 +1187,8 @@ async function init(): Promise<void> {
     if (wallet && ws && ws.readyState === WebSocket.OPEN) {
       requestBalance();
       requestHeight();
-      requestLatestBlock();
     }
-  }, 15000);
+  }, 60000);
 
   addLog('globalLog', 'クライアント起動 (BigInt版)', 'info');
 }
