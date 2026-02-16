@@ -700,6 +700,20 @@ function verifyBlock(block) {
         if (block.height !== prev.height + 1) {
             return { valid: false, error: `height不一致 (期待=${prev.height + 1}, 受信=${block.height})` };
         }
+        // 難易度降下の正当性チェック: 前ブロックより難易度が低い場合、
+        // 1段下げるごとに BLOCK_TIME × 1.5 以上の経過が必要
+        if (block.difficulty < prev.difficulty) {
+            const drop = prev.difficulty - block.difficulty;
+            const elapsed = block.timestamp - prev.timestamp;
+            const requiredMs = drop * CONFIG.BLOCK_TIME * 1.5 * 1000 - 10000;
+            if (elapsed < requiredMs) {
+                return { valid: false, error: `不正な難易度低下: diff ${prev.difficulty}→${block.difficulty} には${(requiredMs / 1000).toFixed(0)}秒必要, 経過=${(elapsed / 1000).toFixed(0)}秒` };
+            }
+        }
+        // 難易度は1ブロックで最大+1まで（急激な上昇を防止）
+        if (block.difficulty > prev.difficulty + 1) {
+            return { valid: false, error: `難易度の急上昇: ${prev.difficulty}→${block.difficulty} (最大+1)` };
+        }
     }
     // タイムスタンプチェック（未来のブロックを拒否）
     if (block.timestamp > Date.now() + 30000) {
@@ -843,21 +857,23 @@ function calculateReward(height) {
 // ============================================================
 // フォーク選択
 // ============================================================
+function calculateChainWork(c) {
+    return c.reduce((sum, b) => sum + (2n ** BigInt(b.difficulty)), 0n);
+}
 function selectChain(otherChain) {
-    if (otherChain.length <= chain.length) {
-        if (otherChain.length === chain.length) {
-            const myDiff = chain.reduce((sum, b) => sum + b.difficulty, 0);
-            const otherDiff = otherChain.reduce((sum, b) => sum + b.difficulty, 0);
-            if (otherDiff <= myDiff)
-                return false;
-        }
-        else {
-            return false;
-        }
+    const myWork = calculateChainWork(chain);
+    const otherWork = calculateChainWork(otherChain);
+    if (otherWork > myWork) {
+        log('Chain', `フォーク解決(ワーク量): 現在=${myWork}, 受信=${otherWork} (長さ: ${chain.length} vs ${otherChain.length})`);
+        rebuildState(otherChain);
+        return true;
     }
-    log('Chain', `フォーク検出: 現在=${chain.length}, 受信=${otherChain.length}`);
-    rebuildState(otherChain);
-    return true;
+    if (otherWork === myWork && otherChain.length > chain.length) {
+        log('Chain', `フォーク解決(同ワーク/長さ優先): ${chain.length} → ${otherChain.length}`);
+        rebuildState(otherChain);
+        return true;
+    }
+    return false;
 }
 function rebuildState(newChain) {
     chain.length = 0;
