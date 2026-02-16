@@ -1155,10 +1155,10 @@ function handleClientPacket(clientId: string, packet: Packet): void {
   log('WSS', `パケット受信: ${packet.type} from ${clientId}`);
 
   switch (packet.type) {
-case 'mine':
-case 'block_broadcast':
-  broadcastToNodes({ type: 'block_broadcast', data: { ...packet.data, minerId: clientId } });
-  break;
+    case 'mine':
+    case 'block_broadcast':
+      broadcastToNodes({ type: 'block_broadcast', data: { ...packet.data, minerId: clientId } });
+      break;
     case 'tx':
       relayToNode({ type: 'tx', data: { ...packet.data, clientId } });
       break;
