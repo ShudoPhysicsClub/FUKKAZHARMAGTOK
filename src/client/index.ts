@@ -731,7 +731,7 @@ function stopMining(): void {
 
 function cleanupWorker(): void {
   if (mineWorker) { mineWorker.terminate(); mineWorker = null; }
-  if (workerBlobURL) { URL.revokeObjectURL(workerBlobURL); workerBlobURL = null; }
+  // workerBlobURLは使い回すので解放しない
 }
 
 function startHashRateUpdate(): void {
@@ -750,9 +750,7 @@ function startHashRateUpdate(): void {
 
 function startMineWorker(): void {
   if (!wallet || !isMining) return;
-  cleanupWorker();
 
-  // ★ rewardはWei文字列 — Workerに渡すブロックデータもそのまま文字列
   const blockData = {
     height: chainHeight,
     previousHash: latestBlockHash,
@@ -760,58 +758,65 @@ function startMineWorker(): void {
     nonce: 0,
     difficulty: currentDifficulty,
     miner: wallet.address,
-    reward: latestReward,           // Wei文字列のまま
+    reward: latestReward,
     transactions: pendingTransactions,
     hash: '',
   };
 
-  // ★ computeBlockHash はノードと完全に同じ式:
-  //    sha256(previousHash + timestamp + nonce + difficulty + miner + reward + JSON.stringify(transactions))
-  //    reward が Wei文字列なので文字列連結でそのまま動く
-  const workerCode = `
-  function sha256(data) {
-    const enc = new TextEncoder().encode(data);
-    return crypto.subtle.digest('SHA-256', enc).then(buf =>
-      Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
-    );
+  // Workerが生きていたら新しいデータを送るだけ（再作成しない）
+  if (mineWorker) {
+    blockData.timestamp = Date.now();
+    mineWorker.postMessage(blockData);
+    return;
   }
 
-  function computeBlockHash(block) {
-    return sha256(
-      block.previousHash +
-      block.timestamp +
-      block.nonce +
-      block.difficulty +
-      block.miner +
-      block.reward +
-      JSON.stringify(block.transactions)
-    );
-  }
-
-  onmessage = async (e) => {
-    const block = e.data;
-    const target = '0'.repeat(block.difficulty);
-    let attempts = 0;
-    const maxAttempts = 100000;
-
-    while (attempts < maxAttempts) {
-      block.nonce = Math.floor(Math.random() * 1e15);
-      const hash = await computeBlockHash(block);
-      attempts++;
-
-      if (hash.startsWith(target)) {
-        block.hash = hash;
-        postMessage({ success: true, block, attempts });
-        return;
-      }
+  // blob URLは一度だけ作成して使い回す
+  if (!workerBlobURL) {
+    const workerCode = `
+    function sha256(data) {
+      const enc = new TextEncoder().encode(data);
+      return crypto.subtle.digest('SHA-256', enc).then(buf =>
+        Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+      );
     }
 
-    postMessage({ success: false, attempts });
-  };
-  `;
+    function computeBlockHash(block) {
+      return sha256(
+        block.previousHash +
+        block.timestamp +
+        block.nonce +
+        block.difficulty +
+        block.miner +
+        block.reward +
+        JSON.stringify(block.transactions)
+      );
+    }
 
-  const blob = new Blob([workerCode], { type: 'application/javascript' });
-  workerBlobURL = URL.createObjectURL(blob);
+    onmessage = async (e) => {
+      const block = e.data;
+      const target = '0'.repeat(block.difficulty);
+      let attempts = 0;
+      const maxAttempts = 100000;
+
+      while (attempts < maxAttempts) {
+        block.nonce = Math.floor(Math.random() * 1e15);
+        const hash = await computeBlockHash(block);
+        attempts++;
+
+        if (hash.startsWith(target)) {
+          block.hash = hash;
+          postMessage({ success: true, block, attempts });
+          return;
+        }
+      }
+
+      postMessage({ success: false, attempts });
+    };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    workerBlobURL = URL.createObjectURL(blob);
+  }
+
   mineWorker = new Worker(workerBlobURL);
 
   mineWorker.onmessage = (e) => {
@@ -822,15 +827,30 @@ function startMineWorker(): void {
       $('minedBlocks').textContent = String(minedCount);
       addLog('miningLog', `ブロック発見! nonce=${block.nonce} hash=${block.hash.slice(0, 16)}...`, 'success');
       send({ type: 'block_broadcast', data: { ...block, minerId: wallet?.address } });
-      cleanupWorker();
+      // 発見後はWorkerを破棄（新テンプレートで再作成される）
+      if (mineWorker) { mineWorker.terminate(); mineWorker = null; }
     } else {
-      if (isMining) startMineWorker();
+      // 10万回失敗 → 同じWorkerに新データを送る（再作成しない）
+      if (isMining && mineWorker) {
+        const retryData = {
+          height: chainHeight,
+          previousHash: latestBlockHash,
+          timestamp: Date.now(),
+          nonce: 0,
+          difficulty: currentDifficulty,
+          miner: wallet?.address || '',
+          reward: latestReward,
+          transactions: pendingTransactions,
+          hash: '',
+        };
+        mineWorker.postMessage(retryData);
+      }
     }
   };
 
   mineWorker.onerror = (err) => {
     addLog('miningLog', `Worker エラー: ${err.message}`, 'error');
-    cleanupWorker();
+    if (mineWorker) { mineWorker.terminate(); mineWorker = null; }
     if (isMining) setTimeout(startMineWorker, 1000);
   };
 
