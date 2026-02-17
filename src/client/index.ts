@@ -236,7 +236,12 @@ function handlePacket(packet: Packet): void {
           tokenBalances[addr] = String(val);
         }
       }
-      nonce = packet.data.pendingNonce ?? packet.data.nonce ?? 0;
+      const newNonce = packet.data.pendingNonce ?? packet.data.nonce ?? 0;
+      const confirmedNonce = packet.data.nonce ?? 0;
+      if (newNonce !== nonce) {
+        addLog('globalLog', `Nonce更新: ${nonce} → ${newNonce} (確定=${confirmedNonce})`, 'info');
+      }
+      nonce = newNonce;
       for (const addr of Object.keys(tokenBalances)) {
         if (!tokenInfoCache[addr]) send({ type: 'get_token', data: { address: addr } });
       }
@@ -258,7 +263,10 @@ function handlePacket(packet: Packet): void {
         const lastBlock = blocks[blocks.length - 1];
         latestBlockHash = lastBlock.hash;
         const newHeight = lastBlock.height + 1;
-        if (newHeight > chainHeight) chainHeight = newHeight;
+        if (newHeight > chainHeight) {
+          addLog('globalLog', `同期: #${chainHeight} → #${newHeight} (${blocks.length}ブロック受信)`, 'info');
+          chainHeight = newHeight;
+        }
         $('chainHeight').textContent = String(chainHeight);
       }
       break;
@@ -295,10 +303,9 @@ function handlePacket(packet: Packet): void {
 
     case 'tx_result':
       if (packet.data.success) {
-        addLog('globalLog', `Tx成功: ${packet.data.txType} (nonce=${packet.data.nonce})`, 'success');
+        addLog('globalLog', `✅ Tx成功: ${packet.data.txType} (nonce=${packet.data.nonce})`, 'success');
       } else {
-        addLog('globalLog', `Tx失敗: ${packet.data.error}`, 'error');
-        // 失敗時: サーバーから最新balance/nonce取得で修正
+        addLog('globalLog', `❌ Tx失敗: ${packet.data.error} (ローカルnonce=${nonce})`, 'error');
       }
       if (wallet) requestBalance();
       break;
@@ -567,6 +574,7 @@ function updateWalletUI(): void {
 
 function updateBalanceUI(): void {
   $('btrBalance').textContent = weiToBtr(balance, 6);
+  $('nonceDisplay').textContent = String(nonce);
 
   const tokenKeys = Object.keys(tokenBalances).filter(addr => {
     try { return BigInt(tokenBalances[addr]) > 0n; } catch { return false; }
@@ -613,8 +621,8 @@ async function signAndSend(txData: Record<string, unknown>): Promise<void> {
     const sigBytes = await Ed25519.sign(msgBytes, privBytes);
     tx.signature = bytesToHex(sigBytes);
     send({ type: 'tx', data: tx });
+    addLog('globalLog', `Tx送信: ${tx.type} (nonce=${nonce})`, 'info');
     nonce++;
-    addLog('globalLog', `Tx送信: ${tx.type}`, 'info');
   } catch (e: unknown) {
     addLog('globalLog', `署名失敗: ${e instanceof Error ? e.message : String(e)}`, 'error');
   }
@@ -1062,7 +1070,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
 </nav>
 <main>
   <div class="panel active" id="panel-wallet">
-    <div class="card"><h2>残高</h2><div class="balance-display"><span id="btrBalance">0</span> <span>BTR</span></div></div>
+    <div class="card"><h2>残高</h2><div class="balance-display"><span id="btrBalance">0</span> <span>BTR</span></div><div style="font-size:11px;color:var(--text2);margin-top:4px">nonce: <span id="nonceDisplay">0</span></div></div>
     <div class="card"><h2>アドレス</h2><div class="address-box" id="myAddress">ウォレット未作成</div></div>
     <div class="card"><h2>公開鍵</h2><div class="address-box" id="myPubKey">-</div></div>
     <div class="card" id="tokenBalances" style="display:none"><h2>トークン残高</h2><div class="token-list" id="tokenList"></div></div>

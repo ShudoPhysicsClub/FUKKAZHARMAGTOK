@@ -899,8 +899,27 @@ function applyBlock(block) {
     }
     adjustDifficulty();
     // pending から適用済みTxを除去
+    // 1. ブロック内TXの署名一致で除去
     const txSigs = new Set(block.transactions.map(tx => tx.signature));
-    const remaining = pendingTxs.filter(tx => !txSigs.has(tx.signature));
+    // 2. ブロック内TXで消費されたnonceも除去（同一アドレス+同一nonceの別TX）
+    const usedNonces = new Map();
+    for (const tx of block.transactions) {
+        if (!usedNonces.has(tx.from))
+            usedNonces.set(tx.from, new Set());
+        usedNonces.get(tx.from).add(tx.nonce);
+    }
+    const remaining = pendingTxs.filter(tx => {
+        if (txSigs.has(tx.signature))
+            return false; // 署名一致
+        const nonces = usedNonces.get(tx.from);
+        if (nonces && nonces.has(tx.nonce))
+            return false; // 同一アドレス+nonceが消費済み
+        // account.nonceより古いTXも除去
+        const acc = peekAccount(tx.from);
+        if (tx.nonce < acc.nonce)
+            return false;
+        return true;
+    });
     pendingTxs.length = 0;
     pendingTxs.push(...remaining);
 }
@@ -1481,9 +1500,16 @@ async function handlePacket(packet) {
                 });
             }
             else {
-                // pending考慮: このアドレスのpending TXの最大nonce+1を計算
-                const pendingNonces = pendingTxs.filter(p => p.from === address).map(p => p.nonce);
-                const pendingNonce = pendingNonces.length > 0 ? Math.max(...pendingNonces) + 1 : account.nonce;
+                // pending考慮: account.nonceとpending内の最大nonce+1のうち大きい方
+                const pendingForAddr = pendingTxs.filter(p => p.from === address);
+                let pendingNonce = account.nonce;
+                if (pendingForAddr.length > 0) {
+                    const maxPendingNonce = Math.max(...pendingForAddr.map(p => p.nonce));
+                    // pending内の最大nonceがaccount.nonce以上の場合のみ有効
+                    if (maxPendingNonce >= account.nonce) {
+                        pendingNonce = maxPendingNonce + 1;
+                    }
+                }
                 sendToSeed({
                     type: 'balance',
                     data: { clientId, address, balance: account.balance, nonce: account.nonce, pendingNonce, tokens: account.tokens }
