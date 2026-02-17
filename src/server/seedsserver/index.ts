@@ -725,11 +725,23 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     }
 
     // ノード→クライアント中継系
-    case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
-    case 'token_info': case 'tokens_list': case 'rate': case 'tx_result': case 'block_template':
-    case 'mempool': case 'transactions': case 'block': {
+// node.js からのレスポンスをクライアントへリレーする
+    case 'balance': 
+    case 'height':        // ★重要: これがないと get_height に反応しない
+    case 'sync_busy':     // ★重要: 同期中の通知をリレーする
+    case 'chain': 
+    case 'chain_chunk': 
+    case 'chain_sync_done': 
+    case 'token_info': 
+    case 'tokens_list': 
+    case 'rate': 
+    case 'tx_result': 
+    case 'block_template':
+    case 'mempool': 
+    case 'transactions': 
+    case 'block': {
       if (packet.data?.clientId) {
-        // エクスプローラAPI用
+        // エクスプローラAPI (HTTP) 用の処理
         const pendingAPI = (globalThis as any).__pendingAPI;
         if (pendingAPI && pendingAPI.has(packet.data.clientId)) {
           const { res, timeout } = pendingAPI.get(packet.data.clientId);
@@ -738,10 +750,14 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
           if (!res.writableEnded) {
             res.end(JSON.stringify(packet.data));
           }
-          break;
+          break; // API用ならここで終了
         }
+
+        // WebSocketクライアント (ブラウザ) 用のリレー処理
         const client = clients.get(packet.data.clientId);
-        if (client) sendWS(client.ws, packet);
+        if (client) {
+          sendWS(client.ws, packet);
+        }
       }
       break;
     }
