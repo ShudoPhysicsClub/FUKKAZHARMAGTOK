@@ -76,6 +76,7 @@ const CONFIG = {
   WSS_DEV_PORT: 8443,         // クライアント用 (HTTP, 開発)
   SEED_PORT: 5000,            // シード間接続
   MAX_NODES: 10,              // ノード上限
+  MAX_CLIENTS: 200,           // WSSクライアント上限
   HEARTBEAT_INTERVAL: 5000,
   HEARTBEAT_TIMEOUT: 15000,
   BLOCK_HASH_TTL: 60000,      // ブロックハッシュ記憶時間 (1分)
@@ -536,10 +537,16 @@ function startWSSServer(): void {
 
   const wss = new WebSocketServer({ server: httpServer });
   wss.on('connection', (ws) => {
+    // クライアント上限チェック
+    if (clients.size >= CONFIG.MAX_CLIENTS) {
+      log('WSS', `⚠ クライアント上限 (${CONFIG.MAX_CLIENTS}) → 拒否`);
+      ws.close(1013, 'Too many clients');
+      return;
+    }
     const clientId = generateId('client');
     const conn: ClientConnection = { ws, id: clientId, connectedAt: Date.now() };
     clients.set(clientId, conn);
-    log('WSS', `クライアント接続: ${clientId} [${clients.size}]`);
+    log('WSS', `クライアント接続: ${clientId} [${clients.size}/${CONFIG.MAX_CLIENTS}]`);
 
     // バージョンハンドシェイク
     sendWS(ws, { type: 'hello', data: { version: CONFIG.VERSION, seedId: mySeedId } });
