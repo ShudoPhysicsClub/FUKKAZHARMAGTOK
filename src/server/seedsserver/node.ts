@@ -523,10 +523,20 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
     return { valid: false, error: 'タイムスタンプが範囲外' };
   }
 
-  // 4. nonce
+  // 4. nonce (pending考慮)
   const account: Account = getAccount(tx.from);
-  if (tx.nonce !== account.nonce) {
-    return { valid: false, error: `nonce不一致 (期待: ${account.nonce}, 受信: ${tx.nonce})` };
+  // pending内のこのアドレスのnonceを集めて、次に期待されるnonceを計算
+  const pendingForAddr = pendingTxs.filter(p => p.from === tx.from).map(p => p.nonce);
+  let expectedNonce = account.nonce;
+  if (pendingForAddr.length > 0) {
+    // pending内のnonceがaccount.nonceから連続しているぶんだけカウント
+    const nonceSet = new Set(pendingForAddr);
+    while (nonceSet.has(expectedNonce)) {
+      expectedNonce++;
+    }
+  }
+  if (tx.nonce !== expectedNonce) {
+    return { valid: false, error: `nonce不一致 (期待: ${expectedNonce}, 受信: ${tx.nonce}, 確定: ${account.nonce}, pending: ${pendingForAddr.length}件)` };
   }
 
   // 5. 手数料 (Wei文字列で比較)
@@ -534,9 +544,41 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
     return { valid: false, error: 'ガス代が不正' };
   }
 
-  // 6. 残高チェック (ガス代分)
-  if (compareWei(account.balance, tx.fee) < 0) {
-    return { valid: false, error: 'ガス代の残高不足' };
+  // 6. pending考慮の実効残高を計算
+  // pending内のこのアドレスのTXが消費するBTRを合算
+  let pendingBtrSpent = "0";
+  let pendingTokenSpent: Record<string, string> = {};
+  const pendingTxsForAddr = pendingTxs.filter(p => p.from === tx.from);
+  for (const ptx of pendingTxsForAddr) {
+    // ガス代
+    pendingBtrSpent = addWei(pendingBtrSpent, ptx.fee);
+    // 送金額
+    if (ptx.type === 'transfer' && ptx.token === BTR_ADDRESS && ptx.amount) {
+      pendingBtrSpent = addWei(pendingBtrSpent, ptx.amount);
+    }
+    if (ptx.type === 'create_token') {
+      pendingBtrSpent = addWei(pendingBtrSpent, CONFIG.TOKEN_CREATION_FEE);
+    }
+    if (ptx.type === 'rename_token') {
+      pendingBtrSpent = addWei(pendingBtrSpent, CONFIG.TOKEN_RENAME_FEE);
+    }
+    if (ptx.type === 'swap' && ptx.data?.tokenIn === BTR_ADDRESS && ptx.data?.amountIn) {
+      pendingBtrSpent = addWei(pendingBtrSpent, ptx.data.amountIn);
+    }
+    // トークン消費
+    if (ptx.type === 'token_transfer' && ptx.amount) {
+      pendingTokenSpent[ptx.token] = addWei(pendingTokenSpent[ptx.token] || "0", ptx.amount);
+    }
+    if (ptx.type === 'swap' && ptx.data?.tokenIn && ptx.data.tokenIn !== BTR_ADDRESS && ptx.data?.amountIn) {
+      pendingTokenSpent[ptx.data.tokenIn] = addWei(pendingTokenSpent[ptx.data.tokenIn] || "0", ptx.data.amountIn);
+    }
+  }
+
+  const effectiveBalance = subWei(account.balance, pendingBtrSpent);
+
+  // ガス代分チェック
+  if (compareWei(effectiveBalance, tx.fee) < 0) {
+    return { valid: false, error: `ガス代の残高不足 (実効残高=${effectiveBalance.slice(0, 20)}, pending消費=${pendingBtrSpent.slice(0, 20)})` };
   }
 
   // 7. type別チェック
@@ -546,8 +588,8 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
         return { valid: false, error: 'transfer: 宛先または金額が不正' };
       }
       if (tx.token === BTR_ADDRESS) {
-        if (compareWei(account.balance, addWei(tx.amount, tx.fee)) < 0) {
-          return { valid: false, error: 'BTR残高不足' };
+        if (compareWei(effectiveBalance, addWei(tx.amount, tx.fee)) < 0) {
+          return { valid: false, error: `BTR残高不足 (実効=${effectiveBalance.slice(0, 20)})` };
         }
       }
       break;
@@ -557,8 +599,9 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
         return { valid: false, error: 'token_transfer: 宛先または金額が不正' };
       }
       const tokenBal: string = getTokenBalance(tx.from, tx.token);
-      if (compareWei(tokenBal, tx.amount) < 0) {
-        return { valid: false, error: 'トークン残高不足' };
+      const effectiveTokenBal = subWei(tokenBal, pendingTokenSpent[tx.token] || "0");
+      if (compareWei(effectiveTokenBal, tx.amount) < 0) {
+        return { valid: false, error: 'トークン残高不足 (pending考慮)' };
       }
       break;
     }
@@ -566,8 +609,8 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
       if (!tx.data?.name || !tx.data?.symbol || !tx.data?.totalSupply || compareWei(tx.data.totalSupply, "0") <= 0) {
         return { valid: false, error: 'create_token: データが不正' };
       }
-      if (compareWei(account.balance, addWei(CONFIG.TOKEN_CREATION_FEE, tx.fee)) < 0) {
-        return { valid: false, error: 'トークン作成費の残高不足' };
+      if (compareWei(effectiveBalance, addWei(CONFIG.TOKEN_CREATION_FEE, tx.fee)) < 0) {
+        return { valid: false, error: 'トークン作成費の残高不足 (pending考慮)' };
       }
       // tokenAddress衝突チェック
       const predictedAddr = '0x' + sha256(tx.signature + tx.timestamp).slice(0, 40);
@@ -589,13 +632,14 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
         return { valid: false, error: 'swap: 同一トークン間のスワップ不可' };
       }
       if (tx.data.tokenIn === BTR_ADDRESS) {
-        if (compareWei(account.balance, addWei(tx.data.amountIn, tx.fee)) < 0) {
-          return { valid: false, error: 'swap: BTR残高不足' };
+        if (compareWei(effectiveBalance, addWei(tx.data.amountIn, tx.fee)) < 0) {
+          return { valid: false, error: 'swap: BTR残高不足 (pending考慮)' };
         }
       } else {
         const tokenBal: string = getTokenBalance(tx.from, tx.data.tokenIn);
-        if (compareWei(tokenBal, tx.data.amountIn) < 0) {
-          return { valid: false, error: 'swap: トークン残高不足' };
+        const effectiveTokenBal = subWei(tokenBal, pendingTokenSpent[tx.data.tokenIn] || "0");
+        if (compareWei(effectiveTokenBal, tx.data.amountIn) < 0) {
+          return { valid: false, error: 'swap: トークン残高不足 (pending考慮)' };
         }
       }
       if (tx.data.tokenIn !== BTR_ADDRESS && !ammPools.has(tx.data.tokenIn)) {
@@ -610,8 +654,8 @@ async function verifyTransaction(tx: Transaction): Promise<{ valid: boolean; err
       if (!tx.data?.newName || !tx.token) {
         return { valid: false, error: 'rename_token: データが不正' };
       }
-      if (compareWei(account.balance, addWei(CONFIG.TOKEN_RENAME_FEE, tx.fee)) < 0) {
-        return { valid: false, error: 'トークン名変更費の残高不足' };
+      if (compareWei(effectiveBalance, addWei(CONFIG.TOKEN_RENAME_FEE, tx.fee)) < 0) {
+        return { valid: false, error: 'トークン名変更費の残高不足 (pending考慮)' };
       }
       const token: TokenInfo | undefined = tokens.get(tx.token);
       if (!token || token.creator !== tx.publicKey) {

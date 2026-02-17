@@ -115,6 +115,22 @@ function addLog(boxId: string, msg: string, type: string = ''): void {
   box.scrollTop = box.scrollHeight;
 }
 
+function showToast(message: string, type: 'success' | 'error' | 'info' = 'info', duration: number = 4000): void {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+  const icons: Record<string, string> = { success: '✅', error: '❌', info: 'ℹ️' };
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span class="toast-body">${message}</span>`;
+  container.appendChild(toast);
+  requestAnimationFrame(() => { requestAnimationFrame(() => { toast.classList.add('show'); }); });
+  setTimeout(() => {
+    toast.classList.remove('show');
+    toast.classList.add('hide');
+    setTimeout(() => toast.remove(), 400);
+  }, duration);
+}
+
 function $(id: string): HTMLElement { return document.getElementById(id)!; }
 function $val(id: string): string { return (document.getElementById(id) as HTMLInputElement).value.trim(); }
 
@@ -304,8 +320,10 @@ function handlePacket(packet: Packet): void {
     case 'tx_result':
       if (packet.data.success) {
         addLog('globalLog', `✅ Tx成功: ${packet.data.txType} (nonce=${packet.data.nonce})`, 'success');
+        showToast(`送信完了: ${packet.data.txType}`, 'success');
       } else {
         addLog('globalLog', `❌ Tx失敗: ${packet.data.error} (ローカルnonce=${nonce})`, 'error');
+        showToast(`送信失敗: ${packet.data.error}`, 'error', 5000);
       }
       if (wallet) requestBalance();
       break;
@@ -382,6 +400,7 @@ function handlePacket(packet: Packet): void {
       $('difficulty').textContent = String(currentDifficulty);
       $('minedBlocks').textContent = String(minedCount);
       addLog('miningLog', `ブロック承認! height=${chainHeight} reward=${weiToBtr(latestReward, 2)} BTR`, 'success');
+      showToast(`⛏ ブロック #${chainHeight} 承認! +${weiToBtr(latestReward, 2)} BTR`, 'success', 5000);
       if (wallet) requestBalance();
 
       // 自動スワップ
@@ -1055,11 +1074,21 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
 .refresh-fab svg{width:24px;height:24px;transition:transform .4s}
 .refresh-fab:not(.cooldown):active svg{transform:rotate(360deg)}
 .refresh-timer{position:absolute;bottom:-6px;right:-6px;background:var(--bg2);border:2px solid var(--border);border-radius:10px;font-family:var(--mono);font-size:9px;color:var(--text2);padding:1px 5px;min-width:22px;text-align:center}
+#toastContainer{position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{pointer-events:auto;max-width:340px;padding:12px 16px;border-radius:10px;font-size:13px;font-family:var(--sans);color:#fff;backdrop-filter:blur(12px);box-shadow:0 4px 20px rgba(0,0,0,.3);transform:translateX(120%);opacity:0;transition:transform .35s cubic-bezier(.22,1,.36,1),opacity .35s ease}
+.toast.show{transform:translateX(0);opacity:1}
+.toast.hide{transform:translateX(120%);opacity:0}
+.toast-success{background:rgba(34,197,94,.88);border:1px solid rgba(34,197,94,.4)}
+.toast-error{background:rgba(239,68,68,.88);border:1px solid rgba(239,68,68,.4)}
+.toast-info{background:rgba(59,130,246,.88);border:1px solid rgba(59,130,246,.4)}
+.toast-icon{display:inline-block;margin-right:6px;font-size:15px;vertical-align:middle}
+.toast-body{display:inline;vertical-align:middle}
 </style>
 <header>
   <div class="logo">BTR<span>Buturi Coin</span></div>
   <div class="status"><div class="status-dot" id="statusDot"></div><span id="statusText">未接続</span></div>
 </header>
+<div id="toastContainer"></div>
 <nav id="nav">
   <button class="active" data-panel="wallet">ウォレット</button>
   <button data-panel="send">送金</button>
