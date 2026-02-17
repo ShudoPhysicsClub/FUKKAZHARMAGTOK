@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>BTR Explorer</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
@@ -18,7 +18,16 @@
 }
 
 body{background:var(--bg);color:var(--t1);font-family:var(--sans);min-height:100vh}
-
+body {
+    touch-action: pan-y pan-x;
+    -ms-touch-action: pan-y pan-x;
+}
+* {
+    touch-action: manipulation;
+}
+input, textarea, select {
+    touch-action: manipulation;
+}
 /* Header */
 .hd{background:linear-gradient(180deg,#0f172a,transparent);border-bottom:1px solid var(--bdr);padding:1rem 1.5rem;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:space-between}
 .logo{display:flex;align-items:center;gap:.6rem}
@@ -168,13 +177,13 @@ function ev(msg,cls=''){const d=document.createElement('div');d.className=cls;d.
 // Charts
 const co={responsive:true,maintainAspectRatio:false,animation:{duration:200},plugins:{legend:{display:false}},
   scales:{x:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9},maxTicksLimit:8}},
-          y:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9}}}}};
+          y:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9}},min:0}}};
 function mc(id,col){return new Chart(document.getElementById(id),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:col,backgroundColor:col+'18',borderWidth:1.5,pointRadius:1.5,pointBackgroundColor:col,fill:true,tension:.3}]},options:{...co}})}
 const chD=mc('cD','#10b981'),chT=mc('cT','#3b82f6'),chR=mc('cR','#f59e0b'),chX=mc('cX','#8b5cf6');
 
 function updateCharts(){
   if(blocks.length<2)return;
-  const s=[...blocks].sort((a,b)=>a.height-b.height);
+  const s=[...blocks].sort((a,b)=>a.height-b.height).filter(b=>b.height>0);
   const lb=s.map(b=>'#'+b.height);
   chD.data.labels=lb;chD.data.datasets[0].data=s.map(b=>b.difficulty||0);chD.update();
   const tm=[];for(let i=1;i<s.length;i++){const d=(s[i].timestamp-s[i-1].timestamp)/1000;tm.push(d>0?d:0)}
