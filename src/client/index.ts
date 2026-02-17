@@ -236,7 +236,7 @@ function handlePacket(packet: Packet): void {
           tokenBalances[addr] = String(val);
         }
       }
-      nonce = packet.data.nonce || 0;
+      nonce = packet.data.pendingNonce ?? packet.data.nonce ?? 0;
       for (const addr of Object.keys(tokenBalances)) {
         if (!tokenInfoCache[addr]) send({ type: 'get_token', data: { address: addr } });
       }
@@ -295,10 +295,10 @@ function handlePacket(packet: Packet): void {
 
     case 'tx_result':
       if (packet.data.success) {
-        addLog('globalLog', `Tx成功: ${packet.data.txType}`, 'success');
+        addLog('globalLog', `Tx成功: ${packet.data.txType} (nonce=${packet.data.nonce})`, 'success');
       } else {
         addLog('globalLog', `Tx失敗: ${packet.data.error}`, 'error');
-        if (nonce > 0) nonce--;
+        // 失敗時: サーバーから最新balance/nonce取得で修正
       }
       if (wallet) requestBalance();
       break;

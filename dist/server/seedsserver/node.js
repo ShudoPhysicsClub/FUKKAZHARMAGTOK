@@ -806,13 +806,36 @@ async function verifyBlock(block) {
             return { valid: false, error: `報酬不一致: ブロック=${block.reward.slice(0, 20)}, 期待=${expectedReward.slice(0, 20)}` };
         }
     }
-    // ブロック内TXの重複チェック
+    // ブロック内TXの重複チェック（署名重複）
     const txSigs = new Set();
     for (const tx of block.transactions) {
         if (txSigs.has(tx.signature)) {
             return { valid: false, error: `ブロック内TX重複: ${tx.signature.slice(0, 16)}...` };
         }
         txSigs.add(tx.signature);
+    }
+    // ブロック内Nonce重複チェック（同一アドレスが同じnonceを使い回していないか）
+    const txNonces = new Map();
+    for (const tx of block.transactions) {
+        if (!txNonces.has(tx.from))
+            txNonces.set(tx.from, new Set());
+        const nonces = txNonces.get(tx.from);
+        if (nonces.has(tx.nonce)) {
+            return { valid: false, error: `ブロック内Nonce重複: ${tx.from.slice(0, 10)}... nonce=${tx.nonce}` };
+        }
+        nonces.add(tx.nonce);
+    }
+    // ブロック内TXのnonce連続性チェック（アカウントのnonce順に並んでいるか）
+    // 同一アドレスのTXは確定nonce, nonce+1, nonce+2... と連続していなければならない
+    for (const [addr, nonces] of txNonces) {
+        const sorted = Array.from(nonces).sort((a, b) => a - b);
+        const account = peekAccount(addr);
+        const expectedStart = account.nonce;
+        for (let i = 0; i < sorted.length; i++) {
+            if (sorted[i] !== expectedStart + i) {
+                return { valid: false, error: `ブロック内Nonce不連続: ${addr.slice(0, 10)}... 期待=${expectedStart + i}, 実際=${sorted[i]}` };
+            }
+        }
     }
     // ブロック内TXの署名検証（PoW/ハッシュ計算量に比べれば軽い）
     for (const tx of block.transactions) {
@@ -961,6 +984,42 @@ function adjustDifficulty() {
 // ============================================================
 // ブロック報酬算出
 // ============================================================
+// ============================================================
+// ブロックテンプレート用TX選別
+// pendingTxsから、nonce連続性を保ったTXだけを選出
+// ============================================================
+function selectValidTxsForBlock(txs) {
+    // アドレスごとにTXをグループ化
+    const byAddr = new Map();
+    for (const tx of txs) {
+        if (!byAddr.has(tx.from))
+            byAddr.set(tx.from, []);
+        byAddr.get(tx.from).push(tx);
+    }
+    const result = [];
+    for (const [addr, addrTxs] of byAddr) {
+        const account = peekAccount(addr);
+        let nextNonce = account.nonce;
+        // nonce順にソート
+        addrTxs.sort((a, b) => a.nonce - b.nonce);
+        // 同一nonceで重複がある場合: 最初のものだけ採用
+        const seen = new Set();
+        for (const tx of addrTxs) {
+            if (seen.has(tx.nonce))
+                continue; // 同じnonceの2個目以降はスキップ
+            seen.add(tx.nonce);
+            if (tx.nonce === nextNonce) {
+                result.push(tx);
+                nextNonce++;
+            }
+            else if (tx.nonce > nextNonce) {
+                break; // 飛びがあったら以降は無効
+            }
+            // tx.nonce < nextNonce はスキップ（既に処理済み）
+        }
+    }
+    return result;
+}
 function calculateReward(height) {
     if (compareWei(totalMined, CONFIG.TOTAL_SUPPLY) >= 0)
         return "0";
@@ -1370,11 +1429,21 @@ async function handlePacket(packet) {
                     }
                 }
                 else {
-                    pendingTxs.push(tx);
-                    log('Tx', `受付: ${tx.type} from ${tx.from.slice(0, 10)}...`);
-                    sendToSeed({ type: 'tx_broadcast', data: tx });
-                    if (clientId) {
-                        sendToSeed({ type: 'tx_result', data: { clientId, success: true, txType: tx.type } });
+                    // pending内で同一アドレス+同一nonceが既にあるか
+                    const duplicate = pendingTxs.some(p => p.from === tx.from && p.nonce === tx.nonce);
+                    if (duplicate) {
+                        log('Tx', `⚠ Nonce重複(pending): ${tx.from.slice(0, 10)}... nonce=${tx.nonce}`);
+                        if (clientId) {
+                            sendToSeed({ type: 'tx_result', data: { clientId, success: false, error: `Nonce ${tx.nonce} already in mempool` } });
+                        }
+                    }
+                    else {
+                        pendingTxs.push(tx);
+                        log('Tx', `受付: ${tx.type} from ${tx.from.slice(0, 10)}... nonce=${tx.nonce}`);
+                        sendToSeed({ type: 'tx_broadcast', data: tx });
+                        if (clientId) {
+                            sendToSeed({ type: 'tx_result', data: { clientId, success: true, txType: tx.type, nonce: tx.nonce } });
+                        }
                     }
                 }
             }
@@ -1392,8 +1461,9 @@ async function handlePacket(packet) {
                 break;
             const result = await verifyTransaction(tx);
             if (result.valid) {
-                const exists = pendingTxs.some(p => p.signature === tx.signature);
-                if (!exists)
+                const sigDup = pendingTxs.some(p => p.signature === tx.signature);
+                const nonceDup = pendingTxs.some(p => p.from === tx.from && p.nonce === tx.nonce);
+                if (!sigDup && !nonceDup)
                     pendingTxs.push(tx);
             }
             break;
@@ -1411,9 +1481,12 @@ async function handlePacket(packet) {
                 });
             }
             else {
+                // pending考慮: このアドレスのpending TXの最大nonce+1を計算
+                const pendingNonces = pendingTxs.filter(p => p.from === address).map(p => p.nonce);
+                const pendingNonce = pendingNonces.length > 0 ? Math.max(...pendingNonces) + 1 : account.nonce;
                 sendToSeed({
                     type: 'balance',
-                    data: { clientId, address, balance: account.balance, nonce: account.nonce, tokens: account.tokens }
+                    data: { clientId, address, balance: account.balance, nonce: account.nonce, pendingNonce, tokens: account.tokens }
                 });
             }
             break;
@@ -1432,11 +1505,13 @@ async function handlePacket(packet) {
             const miner = packet.data?.miner || '';
             const latestHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
             const reward = calculateReward(chain.length);
+            // pendingTxsからnonce整合性のあるTXだけ選別
+            const validTxs = selectValidTxsForBlock(pendingTxs);
             sendToSeed({
                 type: 'block_template',
                 data: {
                     clientId, height: chain.length, previousHash: latestHash,
-                    difficulty: currentDifficulty, reward, transactions: pendingTxs, miner,
+                    difficulty: currentDifficulty, reward, transactions: validTxs, miner,
                 }
             });
             break;
