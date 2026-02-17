@@ -1121,7 +1121,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
   </div>
   <div class="panel" id="panel-swap">
     <div class="card"><h2>スワップ (AMM)</h2>
-      <label>売るトークン</label><input type="text" id="swapIn" placeholder="0x0000000000000000000000000000000000000000 (BTR)">
+      <label>売るトークン</label><input type="text" id="swapIn" placeholder="0x0000000000000000 (BTR)">
       <label>買うトークン</label><input type="text" id="swapOut" placeholder="トークンアドレス">
       <label>金額</label><input type="number" id="swapAmount" placeholder="0" step="0.1" min="0">
       <div style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:12px" id="swapRate">レート: -</div>
