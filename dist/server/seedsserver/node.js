@@ -5,7 +5,7 @@
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
 import { connect } from 'net';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import * as fs from 'fs';
 class Ed25519 {
@@ -245,7 +245,6 @@ const BTR_ADDRESS = '0x0000000000000000';
 const WEI_PER_BTR = 1000000000000000000n; // 10^18
 const CONFIG = {
     SEED_PORT: 5000,
-    CDN_SEEDS_URL: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json',
     CHAIN_FILE: './chain.json',
     ACCOUNTS_FILE: './accounts.json',
     TOKENS_FILE: './tokens.json',
@@ -267,7 +266,9 @@ const CONFIG = {
     LWMA_CLAMP_MAX: 900, // 外れ値フィルタ上限 (15分)
     LWMA_DAMPING: 3, // ダンピング係数 (変化量を1/3に)
     DIFFICULTY_ADJUST_START: 20, // 調整開始ブロック高さ
-    ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
+    // === 同期・セキュリティ ===
+    SYNC_VERIFY_TAIL: 10, // 同期時末尾10ブロックのみ検証
+    MAX_REORG_DEPTH: 10, // 最大巻き戻し深さ
 };
 // ============================================================
 // Wei演算ヘルパー
@@ -373,7 +374,7 @@ const accounts = new Map();
 const tokens = new Map();
 const ammPools = new Map();
 const pendingTxs = [];
-let commonRandom = '';
+let lastBlockHash = ''; // 最新ブロックハッシュ（報酬・レート計算用）
 let totalMined = "0"; // Wei文字列
 let currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
 // ============================================================
@@ -630,9 +631,9 @@ function getAMMRate(tokenAddress) {
 }
 function getFluctuatedRate(tokenAddress, minute) {
     const baseRate = getAMMRate(tokenAddress);
-    if (baseRate === "0" || !commonRandom)
+    if (baseRate === "0" || !lastBlockHash)
         return baseRate;
-    const seed = sha256(commonRandom + tokenAddress + minute);
+    const seed = sha256(lastBlockHash + tokenAddress + minute);
     const fluctuation = parseInt(seed.slice(0, 8), 16);
     const change = (fluctuation % 3000 - 1500); // -1500 ~ +1500
     // rate = base * (10000 + change) / 10000
@@ -782,6 +783,7 @@ function applyBlock(block) {
         }
     }
     chain.push(block);
+    lastBlockHash = block.hash; // 報酬・レート計算用
     // ブロックファイル保存 (rebuilding中はスキップ、後でsaveStateがまとめて保存)
     if (!isRebuilding) {
         try {
@@ -880,11 +882,11 @@ function adjustDifficulty() {
 // ブロック報酬算出
 // ============================================================
 function calculateReward(height) {
-    if (!commonRandom)
-        return (45n * WEI_PER_BTR).toString(); // 45 BTR default
     if (compareWei(totalMined, CONFIG.TOTAL_SUPPLY) >= 0)
         return "0";
-    const seed = sha256(commonRandom + 'BTR_REWARD' + height);
+    // ブロックハッシュベース: 前ブロックのハッシュ + height で決定論的に報酬を算出
+    const prevHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
+    const seed = sha256(prevHash + 'BTR_REWARD' + height);
     const value = parseInt(seed.slice(0, 8), 16);
     const range = 70 - 20 + 1;
     const rewardBtr = 20 + (value % range);
@@ -1059,60 +1061,40 @@ function finishSync() {
     log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
 // ============================================================
-// シードノード接続（seeds.json ベース、優先度順）
+// シードノード接続（seeds.json ベース、ランダム選択、指数バックオフ）
 // ============================================================
 let seedSocket = null;
 let seedBuffer = '';
 let currentSeedHost = '';
-let lastSeedsHash = '';
+let reconnectDelay = 1000;
 function loadSeeds() {
     try {
         if (existsSync('./seeds.json')) {
             const data = JSON.parse(readFileSync('./seeds.json', 'utf-8'));
-            const seeds = data.seeds || [];
-            return seeds.sort((a, b) => a.priority - b.priority);
+            return data.seeds || [];
         }
     }
     catch (e) {
         log('Net', `seeds.json 読み込み失敗: ${e}`);
     }
-    // フォールバック
-    return [{ host: 'mail.shudo-physics.com', priority: 1, publicKey: '' }];
+    return [{ host: 'mail.shudo-physics.com', id: 0 }];
 }
-async function checkSeedsUpdate() {
-    try {
-        log('Net', 'CDN seeds.json チェック中...');
-        const res = await fetch(CONFIG.CDN_SEEDS_URL);
-        if (!res.ok)
-            return;
-        const text = await res.text();
-        const hash = sha256(text);
-        if (!lastSeedsHash) {
-            lastSeedsHash = hash;
-            return;
-        }
-        if (hash !== lastSeedsHash) {
-            log('Net', 'seeds.json 更新検出、保存して再接続');
-            writeFileSync('./seeds.json', text);
-            lastSeedsHash = hash;
-        }
-    }
-    catch {
-        // ネットワーク不通なら無視
-    }
-}
-function connectToSeed(seedIndex = 0) {
+function connectToSeed() {
     const seeds = loadSeeds();
-    if (seedIndex >= seeds.length) {
-        log('Net', '全シードノード接続失敗、5秒後にリトライ');
-        setTimeout(() => connectToSeed(0), 5000);
+    if (seeds.length === 0) {
+        log('Net', '❌ シードリストが空');
         return;
     }
-    const seed = seeds[seedIndex];
+    // 現在接続中のホスト以外からランダム選択
+    const candidates = seeds.filter(s => s.host !== currentSeedHost);
+    const seed = candidates.length > 0
+        ? candidates[Math.floor(Math.random() * candidates.length)]
+        : seeds[Math.floor(Math.random() * seeds.length)];
     currentSeedHost = seed.host;
-    log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (優先度${seed.priority})`);
+    log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (id=${seed.id})`);
     seedSocket = connect(CONFIG.SEED_PORT, seed.host, () => {
-        log('Net', `接続成功: ${seed.host}`);
+        log('Net', `✅ 接続成功: ${seed.host}`);
+        reconnectDelay = 1000; // リセット
         sendToSeed({
             type: 'register',
             data: { chainHeight: chain.length, difficulty: currentDifficulty }
@@ -1135,20 +1117,21 @@ function connectToSeed(seedIndex = 0) {
         }
     });
     seedSocket.on('close', () => {
-        log('Net', `シードノード切断 (${currentSeedHost})`);
+        log('Net', `❌ シード切断 (${currentSeedHost}) → 別シードへ再接続`);
         seedSocket = null;
-        // 切断時にCDNチェック
-        checkSeedsUpdate().then(() => {
-            log('Net', '3秒後に再接続...');
-            setTimeout(() => connectToSeed(0), 3000);
-        });
+        scheduleReconnect();
     });
     seedSocket.on('error', (err) => {
-        log('Net', `接続エラー (${seed.host}): ${err.message}`);
+        log('Net', `❌ 接続エラー (${seed.host}): ${err.message}`);
         seedSocket = null;
-        // 次のシードを試す
-        connectToSeed(seedIndex + 1);
+        scheduleReconnect();
     });
+}
+function scheduleReconnect() {
+    const delay = Math.min(reconnectDelay, 20000);
+    reconnectDelay = Math.min(reconnectDelay * 2, 20000);
+    log('Net', `${delay / 1000}秒後に別シードへ再接続...`);
+    setTimeout(() => connectToSeed(), delay);
 }
 function sendToSeed(packet) {
     if (seedSocket && !seedSocket.destroyed) {
@@ -1391,43 +1374,7 @@ async function handlePacket(packet) {
             }
             break;
         }
-        // ★ admin_mint, admin_distribute, admin_clear_mempool, admin_remove_tx は削除済み
-        // --- 管理者コマンド (残存: ステータス確認のみ) ---
-        case 'admin_status': {
-            const clientId = packet.data?.clientId;
-            sendToSeed({
-                type: 'admin_status',
-                data: {
-                    clientId,
-                    chainHeight: chain.length,
-                    difficulty: currentDifficulty,
-                    accounts: accounts.size,
-                    tokens: tokens.size,
-                    pendingTxs: pendingTxs.length,
-                    totalMined: weiToBtrDisplay(totalMined),
-                    totalMinedWei: totalMined,
-                }
-            });
-            break;
-        }
-        // --- 分散乱数 ---
-        case 'random_request': {
-            const myRandom = randomBytes(32).toString('hex');
-            const commit = sha256(myRandom);
-            global.__btrRandomValue = myRandom;
-            sendToSeed({ type: 'random_commit', data: { hash: commit } });
-            break;
-        }
-        case 'random_reveal_request': {
-            const myRandom = global.__btrRandomValue || '';
-            sendToSeed({ type: 'random_reveal', data: { value: myRandom } });
-            break;
-        }
-        case 'random_result': {
-            commonRandom = packet.data?.random || '';
-            log('Random', `共通乱数受信: ${commonRandom.slice(0, 16)}...`);
-            break;
-        }
+        // admin系・random系は v3.0 で全廃
         // --- チェーン同期 ---
         case 'send_chain_to': {
             const targetNodeId = packet.data?.targetNodeId;
@@ -1574,12 +1521,6 @@ function main() {
     console.log('========================================');
     loadState();
     // 初回seeds.jsonハッシュ記録
-    try {
-        if (existsSync('./seeds.json')) {
-            lastSeedsHash = sha256(readFileSync('./seeds.json', 'utf-8'));
-        }
-    }
-    catch { }
     connectToSeed();
     startPeriodicTasks();
     const seeds = loadSeeds();

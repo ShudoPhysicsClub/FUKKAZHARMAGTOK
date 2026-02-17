@@ -206,7 +206,6 @@ const WEI_PER_BTR = 1_000_000_000_000_000_000n; // 10^18
 
 const CONFIG = {
   SEED_PORT: 5000,
-  CDN_SEEDS_URL: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json',
   CHAIN_FILE: './chain.json',
   ACCOUNTS_FILE: './accounts.json',
   TOKENS_FILE: './tokens.json',
@@ -231,7 +230,9 @@ const CONFIG = {
   LWMA_DAMPING: 3,               // ダンピング係数 (変化量を1/3に)
   DIFFICULTY_ADJUST_START: 20,   // 調整開始ブロック高さ
 
-  ROOT_PUBLIC_KEY: '04920517f44339fed12ebbc8f2c0ae93a0c2bfa4a9ef4bfee1c6f12b452eab70',
+  // === 同期・セキュリティ ===
+  SYNC_VERIFY_TAIL: 10,         // 同期時末尾10ブロックのみ検証
+  MAX_REORG_DEPTH: 10,          // 最大巻き戻し深さ
 };
 
 // ============================================================
@@ -428,7 +429,7 @@ const accounts: Map<string, Account> = new Map();
 const tokens: Map<string, TokenInfo> = new Map();
 const ammPools: Map<string, AMMPool> = new Map();
 const pendingTxs: Transaction[] = [];
-let commonRandom: string = '';
+let lastBlockHash: string = '';   // 最新ブロックハッシュ（報酬・レート計算用）
 let totalMined: string = "0";  // Wei文字列
 let currentDifficulty: number = CONFIG.INITIAL_DIFFICULTY;
 
@@ -711,9 +712,9 @@ function getAMMRate(tokenAddress: string): string {
 
 function getFluctuatedRate(tokenAddress: string, minute: number): string {
   const baseRate: string = getAMMRate(tokenAddress);
-  if (baseRate === "0" || !commonRandom) return baseRate;
+  if (baseRate === "0" || !lastBlockHash) return baseRate;
 
-  const seed: string = sha256(commonRandom + tokenAddress + minute);
+  const seed: string = sha256(lastBlockHash + tokenAddress + minute);
   const fluctuation: number = parseInt(seed.slice(0, 8), 16);
   const change: number = (fluctuation % 3000 - 1500); // -1500 ~ +1500
   // rate = base * (10000 + change) / 10000
@@ -886,6 +887,7 @@ function applyBlock(block: Block): void {
   }
 
   chain.push(block);
+  lastBlockHash = block.hash;  // 報酬・レート計算用
 
   // ブロックファイル保存 (rebuilding中はスキップ、後でsaveStateがまとめて保存)
   if (!isRebuilding) {
@@ -1002,10 +1004,11 @@ function adjustDifficulty(): void {
 // ============================================================
 
 function calculateReward(height: number): string {
-  if (!commonRandom) return (45n * WEI_PER_BTR).toString(); // 45 BTR default
   if (compareWei(totalMined, CONFIG.TOTAL_SUPPLY) >= 0) return "0";
 
-  const seed: string = sha256(commonRandom + 'BTR_REWARD' + height);
+  // ブロックハッシュベース: 前ブロックのハッシュ + height で決定論的に報酬を算出
+  const prevHash = chain.length > 0 ? chain[chain.length - 1].hash : '0'.repeat(64);
+  const seed: string = sha256(prevHash + 'BTR_REWARD' + height);
   const value: number = parseInt(seed.slice(0, 8), 16);
   const range = 70 - 20 + 1;
   const rewardBtr = 20 + (value % range);
@@ -1188,69 +1191,50 @@ function finishSync(): void {
 }
 
 // ============================================================
-// シードノード接続（seeds.json ベース、優先度順）
+// シードノード接続（seeds.json ベース、ランダム選択、指数バックオフ）
 // ============================================================
 
 let seedSocket: Socket | null = null;
 let seedBuffer: string = '';
 let currentSeedHost: string = '';
-let lastSeedsHash: string = '';
+let reconnectDelay: number = 1000;
 
 interface SeedEntry {
   host: string;
-  priority: number;
-  publicKey: string;
+  id: number;
 }
 
 function loadSeeds(): SeedEntry[] {
   try {
     if (existsSync('./seeds.json')) {
       const data = JSON.parse(readFileSync('./seeds.json', 'utf-8'));
-      const seeds: SeedEntry[] = data.seeds || [];
-      return seeds.sort((a: SeedEntry, b: SeedEntry) => a.priority - b.priority);
+      return data.seeds || [];
     }
   } catch (e) {
     log('Net', `seeds.json 読み込み失敗: ${e}`);
   }
-  // フォールバック
-  return [{ host: 'mail.shudo-physics.com', priority: 1, publicKey: '' }];
+  return [{ host: 'mail.shudo-physics.com', id: 0 }];
 }
 
-async function checkSeedsUpdate(): Promise<void> {
-  try {
-    log('Net', 'CDN seeds.json チェック中...');
-    const res = await fetch(CONFIG.CDN_SEEDS_URL);
-    if (!res.ok) return;
-    const text = await res.text();
-    const hash = sha256(text);
-    if (!lastSeedsHash) {
-      lastSeedsHash = hash;
-      return;
-    }
-    if (hash !== lastSeedsHash) {
-      log('Net', 'seeds.json 更新検出、保存して再接続');
-      writeFileSync('./seeds.json', text);
-      lastSeedsHash = hash;
-    }
-  } catch {
-    // ネットワーク不通なら無視
-  }
-}
-
-function connectToSeed(seedIndex: number = 0): void {
+function connectToSeed(): void {
   const seeds = loadSeeds();
-  if (seedIndex >= seeds.length) {
-    log('Net', '全シードノード接続失敗、5秒後にリトライ');
-    setTimeout(() => connectToSeed(0), 5000);
+  if (seeds.length === 0) {
+    log('Net', '❌ シードリストが空');
     return;
   }
 
-  const seed = seeds[seedIndex];
+  // 現在接続中のホスト以外からランダム選択
+  const candidates = seeds.filter(s => s.host !== currentSeedHost);
+  const seed = candidates.length > 0
+    ? candidates[Math.floor(Math.random() * candidates.length)]
+    : seeds[Math.floor(Math.random() * seeds.length)];
+
   currentSeedHost = seed.host;
-  log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (優先度${seed.priority})`);
+  log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (id=${seed.id})`);
 
   seedSocket = connect(CONFIG.SEED_PORT, seed.host, () => {
-    log('Net', `接続成功: ${seed.host}`);
+    log('Net', `✅ 接続成功: ${seed.host}`);
+    reconnectDelay = 1000; // リセット
     sendToSeed({
       type: 'register',
       data: { chainHeight: chain.length, difficulty: currentDifficulty }
@@ -1270,21 +1254,23 @@ function connectToSeed(seedIndex: number = 0): void {
   });
 
   seedSocket.on('close', () => {
-    log('Net', `シードノード切断 (${currentSeedHost})`);
+    log('Net', `❌ シード切断 (${currentSeedHost}) → 別シードへ再接続`);
     seedSocket = null;
-    // 切断時にCDNチェック
-    checkSeedsUpdate().then(() => {
-      log('Net', '3秒後に再接続...');
-      setTimeout(() => connectToSeed(0), 3000);
-    });
+    scheduleReconnect();
   });
 
   seedSocket.on('error', (err: Error) => {
-    log('Net', `接続エラー (${seed.host}): ${err.message}`);
+    log('Net', `❌ 接続エラー (${seed.host}): ${err.message}`);
     seedSocket = null;
-    // 次のシードを試す
-    connectToSeed(seedIndex + 1);
+    scheduleReconnect();
   });
+}
+
+function scheduleReconnect(): void {
+  const delay = Math.min(reconnectDelay, 20000);
+  reconnectDelay = Math.min(reconnectDelay * 2, 20000);
+  log('Net', `${delay / 1000}秒後に別シードへ再接続...`);
+  setTimeout(() => connectToSeed(), delay);
 }
 
 function sendToSeed(packet: Packet): void {
@@ -1541,47 +1527,7 @@ async function handlePacket(packet: Packet): Promise<void> {
       break;
     }
 
-    // ★ admin_mint, admin_distribute, admin_clear_mempool, admin_remove_tx は削除済み
-
-    // --- 管理者コマンド (残存: ステータス確認のみ) ---
-    case 'admin_status': {
-      const clientId: string = packet.data?.clientId;
-      sendToSeed({
-        type: 'admin_status',
-        data: {
-          clientId,
-          chainHeight: chain.length,
-          difficulty: currentDifficulty,
-          accounts: accounts.size,
-          tokens: tokens.size,
-          pendingTxs: pendingTxs.length,
-          totalMined: weiToBtrDisplay(totalMined),
-          totalMinedWei: totalMined,
-        }
-      });
-      break;
-    }
-
-    // --- 分散乱数 ---
-    case 'random_request': {
-      const myRandom: string = randomBytes(32).toString('hex');
-      const commit: string = sha256(myRandom);
-      (global as any).__btrRandomValue = myRandom;
-      sendToSeed({ type: 'random_commit', data: { hash: commit } });
-      break;
-    }
-
-    case 'random_reveal_request': {
-      const myRandom: string = (global as any).__btrRandomValue || '';
-      sendToSeed({ type: 'random_reveal', data: { value: myRandom } });
-      break;
-    }
-
-    case 'random_result': {
-      commonRandom = packet.data?.random || '';
-      log('Random', `共通乱数受信: ${commonRandom.slice(0, 16)}...`);
-      break;
-    }
+    // admin系・random系は v3.0 で全廃
 
     // --- チェーン同期 ---
     case 'send_chain_to': {
@@ -1739,11 +1685,6 @@ function main(): void {
   loadState();
 
   // 初回seeds.jsonハッシュ記録
-  try {
-    if (existsSync('./seeds.json')) {
-      lastSeedsHash = sha256(readFileSync('./seeds.json', 'utf-8'));
-    }
-  } catch {}
 
   connectToSeed();
   startPeriodicTasks();

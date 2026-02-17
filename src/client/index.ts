@@ -8,9 +8,14 @@ import { Ed25519 } from './crypto.js';
 
 const DELIMITER: string = '\nLINE_BREAK\n';
 const BTR_ADDRESS: string = '0x0000000000000000';
-const WS_URL: string = 'wss://shudo-physics.f5.si:443';
+const SEEDS_CDN: string = 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json';
 const WEI_PER_BTR = 1_000_000_000_000_000_000n;
 const GAS_FEE_WEI: string = (1n * WEI_PER_BTR).toString();
+
+interface SeedEntry { host: string; id: number; }
+let seedsList: SeedEntry[] = [];
+let currentSeedHost: string = '';
+let wsReconnectDelay: number = 1000;
 
 interface Wallet { privateKey: string; publicKey: string; address: string; }
 interface Packet { type: string; data?: any; }
@@ -149,16 +154,46 @@ async function checkForUpdate(): Promise<void> {
 }
 
 // ============================================================
-// WebSocket
+// WebSocket (seeds.jsonからランダム選択、WSS 443)
 // ============================================================
 
-function connect(): void {
-  addLog('globalLog', 'シードノードに接続中...', 'info');
-  ws = new WebSocket(WS_URL);
+async function fetchSeeds(): Promise<SeedEntry[]> {
+  try {
+    const res = await fetch(SEEDS_CDN);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.seeds || [];
+  } catch {
+    return [];
+  }
+}
+
+function getRandomSeedURL(): string {
+  if (seedsList.length === 0) return 'wss://mail.shudo-physics.com:443';
+  // 現在接続中以外からランダム選択
+  const candidates = seedsList.filter(s => s.host !== currentSeedHost);
+  const seed = candidates.length > 0
+    ? candidates[Math.floor(Math.random() * candidates.length)]
+    : seedsList[Math.floor(Math.random() * seedsList.length)];
+  currentSeedHost = seed.host;
+  return `wss://${seed.host}:443`;
+}
+
+async function connect(): Promise<void> {
+  // 初回はseeds.jsonを取得
+  if (seedsList.length === 0) {
+    seedsList = await fetchSeeds();
+  }
+
+  const url = getRandomSeedURL();
+  addLog('globalLog', `シード接続中: ${currentSeedHost}`, 'info');
+  ws = new WebSocket(url);
+
   ws.onopen = () => {
     $('statusDot').classList.add('connected');
     $('statusText').textContent = '接続中';
-    addLog('globalLog', '接続成功', 'success');
+    addLog('globalLog', `✅ ${currentSeedHost} 接続成功`, 'success');
+    wsReconnectDelay = 1000; // リセット
     if (wallet) { requestBalance(); requestHeight(); requestLatestBlock(); }
   };
   ws.onmessage = (event) => {
@@ -171,10 +206,12 @@ function connect(): void {
   ws.onclose = () => {
     $('statusDot').classList.remove('connected');
     $('statusText').textContent = '切断';
-    addLog('globalLog', '切断、アップデート確認中...', 'error');
+    // 別シードへ指数バックオフ再接続
+    const delay = Math.min(wsReconnectDelay, 20000);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 2, 20000);
+    addLog('globalLog', `切断 → ${delay / 1000}秒後に別シードへ`, 'error');
     checkForUpdate().then(() => {
-      addLog('globalLog', '3秒後に再接続...', 'info');
-      setTimeout(connect, 3000);
+      setTimeout(connect, delay);
     });
   };
   ws.onerror = () => { addLog('globalLog', '接続エラー', 'error'); };
