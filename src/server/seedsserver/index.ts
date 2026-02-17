@@ -517,6 +517,20 @@ function startTCPServer(): void {
 // ============================================================
 
 function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
+  // 静的ファイル配信: /explorer → explorer.html
+  if (req.url === '/explorer' || req.url === '/explorer/') {
+    try {
+      const html = fs.readFileSync('./explorer.html', 'utf-8');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(html);
+      return true;
+    } catch {
+      res.statusCode = 404;
+      res.end('explorer.html not found');
+      return true;
+    }
+  }
+
   if (!req.url?.startsWith('/api/')) return false;
 
   res.setHeader('Content-Type', 'application/json');
@@ -524,6 +538,7 @@ function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
 
   const url = req.url;
 
+  // --- /api/status ---
   if (url === '/api/status') {
     const nodes = Array.from(fullNodes.values());
     const bestNode = nodes.length > 0
@@ -542,6 +557,7 @@ function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
     return true;
   }
 
+  // --- /api/nodes ---
   if (url === '/api/nodes') {
     const nodeList = Array.from(fullNodes.values()).map(n => ({
       id: n.info.id,
@@ -554,6 +570,7 @@ function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
     return true;
   }
 
+  // --- /api/seeds ---
   if (url === '/api/seeds') {
     const seedList = Array.from(seedPeers.values()).map(s => ({
       host: s.host,
@@ -564,34 +581,72 @@ function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
     return true;
   }
 
-  // ブロック取得はノードに中継
-  if (url?.startsWith('/api/block/')) {
-    const heightStr = url.split('/api/block/')[1];
-    const height = parseInt(heightStr);
-    if (isNaN(height)) {
-      res.statusCode = 400;
-      res.end(JSON.stringify({ error: 'Invalid height' }));
-      return true;
-    }
-    // ノードにリクエストして返す（簡易版: 一番高いノードに聞く）
+  // --- ノード中継API（/api/block/:height, /api/blocks, /api/balance/:addr, /api/chain） ---
+  // 全て同じパターン: reqIdでpending管理、ノードに中継、レスポンスを待つ
+
+  const pendingAPI: Map<string, { res: ServerResponse; timeout: NodeJS.Timeout }> =
+    (globalThis as any).__pendingAPI || ((globalThis as any).__pendingAPI = new Map());
+
+  function relayToNodeAPI(packet: Packet, reqId: string): boolean {
     const nodes = Array.from(fullNodes.values());
     if (nodes.length === 0) {
       res.statusCode = 503;
       res.end(JSON.stringify({ error: 'No nodes available' }));
-      return true;
+      return false;
     }
     const best = nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b);
+    pendingAPI.set(reqId, {
+      res,
+      timeout: setTimeout(() => {
+        pendingAPI.delete(reqId);
+        if (!res.writableEnded) { res.statusCode = 504; res.end(JSON.stringify({ error: 'Timeout' })); }
+      }, 5000)
+    });
+    sendTCP(best.socket, packet);
+    return true;
+  }
+
+  // /api/block/:height
+  if (url?.startsWith('/api/block/')) {
+    const height = parseInt(url.split('/api/block/')[1]);
+    if (isNaN(height)) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid height' })); return true; }
     const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    // 一時的にHTTPレスポンスを保持
-    (globalThis as any).__pendingAPI = (globalThis as any).__pendingAPI || new Map();
-    (globalThis as any).__pendingAPI.set(reqId, { res, timeout: setTimeout(() => {
-      (globalThis as any).__pendingAPI.delete(reqId);
-      if (!res.writableEnded) {
-        res.statusCode = 504;
-        res.end(JSON.stringify({ error: 'Timeout' }));
-      }
-    }, 5000) });
-    sendTCP(best.socket, { type: 'get_block', data: { height, clientId: reqId } });
+    relayToNodeAPI({ type: 'get_block', data: { height, clientId: reqId } }, reqId);
+    return true;
+  }
+
+  // /api/blocks?from=N&to=M (最新N件)
+  if (url?.startsWith('/api/blocks')) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const from = parseInt(params.get('from') || '-10');
+    const to = parseInt(params.get('to') || '0');
+    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    relayToNodeAPI({ type: 'get_chain', data: { from, to, clientId: reqId } }, reqId);
+    return true;
+  }
+
+  // /api/balance/:address
+  if (url?.startsWith('/api/balance/')) {
+    const address = url.split('/api/balance/')[1];
+    if (!address) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Address required' })); return true; }
+    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    relayToNodeAPI({ type: 'get_balance', data: { address, clientId: reqId } }, reqId);
+    return true;
+  }
+
+  // /api/mempool
+  if (url === '/api/mempool') {
+    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    relayToNodeAPI({ type: 'get_mempool', data: { clientId: reqId } }, reqId);
+    return true;
+  }
+
+  // /api/transactions?limit=N
+  if (url?.startsWith('/api/transactions')) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const limit = parseInt(params.get('limit') || '20');
+    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    relayToNodeAPI({ type: 'get_recent_transactions', data: { limit, clientId: reqId } }, reqId);
     return true;
   }
 
