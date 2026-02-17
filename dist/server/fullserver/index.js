@@ -9,7 +9,7 @@ import https from 'https';
 const CONFIG = {
     NODE_SCRIPT: './node.js',
     SEEDS_PATH: './seeds.json',
-    SEEDS_CDN: 'https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json',
+    SEEDS_CDN: 'https://cdn.statically.io/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK/main/src/server/fullserver/seeds.json',
     RESTART_DELAY: 3000, // 再起動待機(ms)
     MAX_RAPID_RESTARTS: 5, // 短時間内の最大再起動回数
     RAPID_RESTART_WINDOW: 60000, // 短時間の定義(ms)
