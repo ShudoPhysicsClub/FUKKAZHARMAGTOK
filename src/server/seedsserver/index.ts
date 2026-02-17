@@ -32,7 +32,7 @@ function sendTCP(socket: net.Socket, packet: Packet): void {
 }
 
 function sendWS(ws: WebSocket, packet: Packet): void {
-  try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(packet)); } catch {}
+  try { if (ws.readyState === WebSocket.OPEN) ws.send(serializePacket(packet)); } catch {}
 }
 
 // ============================================================
@@ -393,7 +393,7 @@ function handleSeedPacket(peerHost: string, packet: Packet): void {
     }
     default:
       if (packet.type !== 'ping' && packet.type !== 'pong') {
-        log('Seeds', `❓ 不明なシード間パケット: ${packet.type} from ${peerHost}`);
+        log('Seeds', `❓ 不明シード間パケット: ${packet.type} from ${peerHost} | data=${JSON.stringify(packet.data || {}).slice(0, 300)}`);
       }
   }
 }
@@ -636,10 +636,18 @@ function startWSSServer(): void {
     sendWS(ws, { type: 'hello', data: { version: CONFIG.VERSION, seedId: mySeedId } });
 
     ws.on('message', (data) => {
-      try {
-        const packet: Packet = JSON.parse(data.toString());
-        handleClientPacket(clientId, packet);
-      } catch {}
+      const raw = data.toString();
+      // クライアントはDELIMITER付きで送ってくるので分割
+      const parts = raw.split(DELIMITER);
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        try {
+          const packet: Packet = JSON.parse(part);
+          handleClientPacket(clientId, packet);
+        } catch (e) {
+          log('WSS', `⚠ パースエラー (${clientId}): ${(e as Error).message} | raw=${raw.slice(0, 200)}`);
+        }
+      }
     });
     ws.on('close', () => {
       clients.delete(clientId);
@@ -656,6 +664,10 @@ function startWSSServer(): void {
 function handleNodePacket(nodeId: string, packet: Packet): void {
   const conn = fullNodes.get(nodeId);
   if (!conn) return;
+
+  if (packet.type !== 'pong') {
+    log('TCP', `📨 ${nodeId}: ${packet.type} ${JSON.stringify(packet.data || {}).slice(0, 120)}`);
+  }
 
   switch (packet.type) {
     case 'pong':
@@ -725,23 +737,12 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     }
 
     // ノード→クライアント中継系
-// node.js からのレスポンスをクライアントへリレーする
-    case 'balance': 
-    case 'height':        // ★重要: これがないと get_height に反応しない
-    case 'sync_busy':     // ★重要: 同期中の通知をリレーする
-    case 'chain': 
-    case 'chain_chunk': 
-    case 'chain_sync_done': 
-    case 'token_info': 
-    case 'tokens_list': 
-    case 'rate': 
-    case 'tx_result': 
-    case 'block_template':
-    case 'mempool': 
-    case 'transactions': 
-    case 'block': {
+    case 'balance': case 'chain': case 'chain_chunk': case 'chain_sync_done':
+    case 'token_info': case 'tokens_list': case 'rate': case 'tx_result': case 'block_template':
+    case 'mempool': case 'transactions': case 'block':
+    case 'sync_busy': case 'error': {
       if (packet.data?.clientId) {
-        // エクスプローラAPI (HTTP) 用の処理
+        // エクスプローラAPI用
         const pendingAPI = (globalThis as any).__pendingAPI;
         if (pendingAPI && pendingAPI.has(packet.data.clientId)) {
           const { res, timeout } = pendingAPI.get(packet.data.clientId);
@@ -750,14 +751,10 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
           if (!res.writableEnded) {
             res.end(JSON.stringify(packet.data));
           }
-          break; // API用ならここで終了
+          break;
         }
-
-        // WebSocketクライアント (ブラウザ) 用のリレー処理
         const client = clients.get(packet.data.clientId);
-        if (client) {
-          sendWS(client.ws, packet);
-        }
+        if (client) sendWS(client.ws, packet);
       }
       break;
     }
@@ -836,7 +833,7 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
 
     default:
       if (packet.type !== 'ping') {
-        log('TCP', `不明なパケット: ${packet.type} from ${nodeId}`);
+        log('TCP', `❓ 不明パケット: ${packet.type} from ${nodeId} | data=${JSON.stringify(packet.data || {}).slice(0, 300)}`);
       }
   }
 }
@@ -848,6 +845,8 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
 function handleClientPacket(clientId: string, packet: Packet): void {
   const conn = clients.get(clientId);
   if (!conn) return;
+
+  log('WSS', `📨 ${clientId}: ${packet.type} ${JSON.stringify(packet.data || {}).slice(0, 120)}`);
 
   switch (packet.type) {
     case 'mine':
@@ -867,7 +866,7 @@ function handleClientPacket(clientId: string, packet: Packet): void {
       break;
 
     default:
-      log('WSS', `不明なパケット: ${packet.type} from ${clientId}`);
+      log('WSS', `❓ 不明パケット: ${packet.type} from ${clientId} | data=${JSON.stringify(packet.data || {}).slice(0, 300)}`);
   }
 }
 
