@@ -792,9 +792,21 @@ function startMineWorker(): void {
       );
     }
 
+    function meetsTarget(hash, difficulty) {
+      const fullNibbles = Math.floor(difficulty / 4);
+      const remainBits = difficulty % 4;
+      for (let i = 0; i < fullNibbles; i++) {
+        if (hash[i] !== '0') return false;
+      }
+      if (remainBits > 0 && fullNibbles < hash.length) {
+        const v = parseInt(hash[fullNibbles], 16);
+        if (v > (1 << (4 - remainBits)) - 1) return false;
+      }
+      return true;
+    }
+
     onmessage = async (e) => {
       const block = e.data;
-      const target = '0'.repeat(block.difficulty);
       let attempts = 0;
       const maxAttempts = 100000;
 
@@ -803,7 +815,7 @@ function startMineWorker(): void {
         const hash = await computeBlockHash(block);
         attempts++;
 
-        if (hash.startsWith(target)) {
+        if (meetsTarget(hash, block.difficulty)) {
           block.hash = hash;
           postMessage({ success: true, block, attempts });
           return;
@@ -1048,7 +1060,7 @@ button.btn:hover{background:var(--accent2)}button.btn:disabled{opacity:.3;cursor
   <div class="panel" id="panel-mining">
     <div class="card"><h2>マイニング</h2>
       <div class="mining-stats">
-        <div class="stat-box"><div class="label">ステータス</div><div class="value" id="miningStatus">undefined</div></div>
+        <div class="stat-box"><div class="label">ステータス</div><div class="value" id="miningStatus">停止中</div></div>
         <div class="stat-box"><div class="label">ハッシュレート</div><div class="value hashrate" id="hashRate">0 H/s</div></div>
         <div class="stat-box"><div class="label">難易度</div><div class="value" id="difficulty">-</div></div>
         <div class="stat-box"><div class="label">採掘ブロック</div><div class="value" id="minedBlocks">0</div></div>

@@ -222,10 +222,10 @@ const CONFIG = {
   TIMESTAMP_TOLERANCE: 10 * 60 * 1000,
   MAX_BLOCK_SIZE: 3 * 1024 * 1024,
 
-  // === LWMA難易度調整 ===
+  // === LWMA難易度調整 (ビット単位) ===
   DIFFICULTY_WINDOW: 20,          // 過去20ブロックで調整
-  INITIAL_DIFFICULTY: 6,          // 初期難易度
-  MIN_DIFFICULTY: 5,              // 最低難易度
+  INITIAL_DIFFICULTY: 24,         // 初期難易度 (先頭24ビットが0)
+  MIN_DIFFICULTY: 20,             // 最低難易度 (先頭20ビットが0)
   LWMA_CLAMP_MIN: 30,            // 外れ値フィルタ下限 (秒)
   LWMA_CLAMP_MAX: 900,           // 外れ値フィルタ上限 (15分)
   LWMA_DAMPING: 3,               // ダンピング係数 (変化量を1/3に)
@@ -395,6 +395,28 @@ function computeBlockHash(block: Block): string {
     block.reward +
     JSON.stringify(block.transactions)
   );
+}
+
+// ビット難易度: ハッシュの先頭Nビットが0であるかチェック
+function meetsTargetDifficulty(hash: string, difficulty: number): boolean {
+  // 完全ニブル数 (4ビット単位)
+  const fullNibbles = Math.floor(difficulty / 4);
+  const remainBits = difficulty % 4;
+
+  // まず完全ニブル分が全部'0'か
+  for (let i = 0; i < fullNibbles; i++) {
+    if (hash[i] !== '0') return false;
+  }
+
+  // 残りビットがあれば、次のニブルの上位ビットをチェック
+  if (remainBits > 0 && fullNibbles < hash.length) {
+    const nibbleValue = parseInt(hash[fullNibbles], 16);
+    // remainBits=1 → 値は0~7 (0xxx), remainBits=2 → 0~3 (00xx), remainBits=3 → 0~1 (000x)
+    const maxValue = (1 << (4 - remainBits)) - 1;
+    if (nibbleValue > maxValue) return false;
+  }
+
+  return true;
 }
 
 // ============================================================
@@ -795,8 +817,8 @@ function verifyBlock(block: Block): { valid: boolean; error?: string } {
     return { valid: false, error: `ブロックハッシュ不一致 (計算=${expectedHash.slice(0, 16)}..., ブロック=${block.hash.slice(0, 16)}...)` };
   }
 
-  if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
-    return { valid: false, error: `PoW条件を満たしていない (先頭0が${block.difficulty}個必要)` };
+  if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
+    return { valid: false, error: `PoW条件を満たしていない (先頭${block.difficulty}ビットが0である必要)` };
   }
 
   if (chain.length > 0) {
