@@ -6,7 +6,7 @@
 import net from 'net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createHTTPSServer } from 'https';
-import { createServer as createHTTPServer, IncomingMessage, ServerResponse } from 'http';
+import { createServer as createHTTPServer } from 'http';
 import fs from 'fs';
 import https from 'https';
 
@@ -513,168 +513,22 @@ function startTCPServer(): void {
 }
 
 // ============================================================
-// WSSサーバー（クライアント用 :443 / :8443）+ エクスプローラAPI
+// WSSサーバー（クライアント用 :443 / :8443）
 // ============================================================
-
-function handleExplorerAPI(req: IncomingMessage, res: ServerResponse): boolean {
-  // 静的ファイル配信: /explorer → explorer.html
-  if (req.url === '/explorer' || req.url === '/explorer/') {
-    try {
-      const html = fs.readFileSync('./explorer.html', 'utf-8');
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(html);
-      return true;
-    } catch {
-      res.statusCode = 404;
-      res.end('explorer.html not found');
-      return true;
-    }
-  }
-
-  if (!req.url?.startsWith('/api/')) return false;
-
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-
-  const url = req.url;
-
-  // --- /api/status ---
-  if (url === '/api/status') {
-    const nodes = Array.from(fullNodes.values());
-    const bestNode = nodes.length > 0
-      ? nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b)
-      : null;
-    res.end(JSON.stringify({
-      version: CONFIG.VERSION,
-      nodes: fullNodes.size,
-      clients: clients.size,
-      seedPeers: seedPeers.size,
-      chainHeight: bestNode?.info.chainHeight || 0,
-      difficulty: bestNode?.info.difficulty || 1,
-      mySeedId,
-      uptime: process.uptime(),
-    }));
-    return true;
-  }
-
-  // --- /api/nodes ---
-  if (url === '/api/nodes') {
-    const nodeList = Array.from(fullNodes.values()).map(n => ({
-      id: n.info.id,
-      host: n.info.host,
-      chainHeight: n.info.chainHeight,
-      difficulty: n.info.difficulty,
-      connectedAt: n.info.connectedAt,
-    }));
-    res.end(JSON.stringify({ nodes: nodeList }));
-    return true;
-  }
-
-  // --- /api/seeds ---
-  if (url === '/api/seeds') {
-    const seedList = Array.from(seedPeers.values()).map(s => ({
-      host: s.host,
-      seedId: s.seedId,
-      lastPing: s.lastPing,
-    }));
-    res.end(JSON.stringify({ seeds: seedList, mySeedId }));
-    return true;
-  }
-
-  // --- ノード中継API（/api/block/:height, /api/blocks, /api/balance/:addr, /api/chain） ---
-  // 全て同じパターン: reqIdでpending管理、ノードに中継、レスポンスを待つ
-
-  const pendingAPI: Map<string, { res: ServerResponse; timeout: NodeJS.Timeout }> =
-    (globalThis as any).__pendingAPI || ((globalThis as any).__pendingAPI = new Map());
-
-  function relayToNodeAPI(packet: Packet, reqId: string): boolean {
-    const nodes = Array.from(fullNodes.values());
-    if (nodes.length === 0) {
-      res.statusCode = 503;
-      res.end(JSON.stringify({ error: 'No nodes available' }));
-      return false;
-    }
-    const best = nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b);
-    pendingAPI.set(reqId, {
-      res,
-      timeout: setTimeout(() => {
-        pendingAPI.delete(reqId);
-        if (!res.writableEnded) { res.statusCode = 504; res.end(JSON.stringify({ error: 'Timeout' })); }
-      }, 5000)
-    });
-    sendTCP(best.socket, packet);
-    return true;
-  }
-
-  // /api/block/:height
-  if (url?.startsWith('/api/block/')) {
-    const height = parseInt(url.split('/api/block/')[1]);
-    if (isNaN(height)) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid height' })); return true; }
-    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    relayToNodeAPI({ type: 'get_block', data: { height, clientId: reqId } }, reqId);
-    return true;
-  }
-
-  // /api/blocks?from=N&to=M (最新N件)
-  if (url?.startsWith('/api/blocks')) {
-    const params = new URL(url, 'http://localhost').searchParams;
-    const from = parseInt(params.get('from') || '-10');
-    const to = parseInt(params.get('to') || '0');
-    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    relayToNodeAPI({ type: 'get_chain', data: { from, to, clientId: reqId } }, reqId);
-    return true;
-  }
-
-  // /api/balance/:address
-  if (url?.startsWith('/api/balance/')) {
-    const address = url.split('/api/balance/')[1];
-    if (!address) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Address required' })); return true; }
-    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    relayToNodeAPI({ type: 'get_balance', data: { address, clientId: reqId } }, reqId);
-    return true;
-  }
-
-  // /api/mempool
-  if (url === '/api/mempool') {
-    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    relayToNodeAPI({ type: 'get_mempool', data: { clientId: reqId } }, reqId);
-    return true;
-  }
-
-  // /api/transactions?limit=N
-  if (url?.startsWith('/api/transactions')) {
-    const params = new URL(url, 'http://localhost').searchParams;
-    const limit = parseInt(params.get('limit') || '20');
-    const reqId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    relayToNodeAPI({ type: 'get_recent_transactions', data: { limit, clientId: reqId } }, reqId);
-    return true;
-  }
-
-  res.statusCode = 404;
-  res.end(JSON.stringify({ error: 'Not found' }));
-  return true;
-}
 
 function startWSSServer(): void {
   let httpServer: any;
-
-  const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
-    if (!handleExplorerAPI(req, res)) {
-      res.statusCode = 404;
-      res.end('BTR Seed Server');
-    }
-  };
 
   if (fs.existsSync(CONFIG.SSL_CERT) && fs.existsSync(CONFIG.SSL_KEY)) {
     httpServer = createHTTPSServer({
       cert: fs.readFileSync(CONFIG.SSL_CERT),
       key: fs.readFileSync(CONFIG.SSL_KEY),
-    }, requestHandler);
+    });
     httpServer.listen(CONFIG.WSS_PORT, () => {
       log('WSS', `WSSサーバー起動: port ${CONFIG.WSS_PORT} (HTTPS)`);
     });
   } else {
-    httpServer = createHTTPServer(requestHandler);
+    httpServer = createHTTPServer();
     httpServer.listen(CONFIG.WSS_DEV_PORT, () => {
       log('WSS', `WSサーバー起動: port ${CONFIG.WSS_DEV_PORT} (HTTP, 開発)`);
     });
@@ -797,17 +651,6 @@ function handleNodePacket(nodeId: string, packet: Packet): void {
     case 'mempool': case 'transactions': case 'block':
     case 'sync_busy': case 'error': {
       if (packet.data?.clientId) {
-        // エクスプローラAPI用
-        const pendingAPI = (globalThis as any).__pendingAPI;
-        if (pendingAPI && pendingAPI.has(packet.data.clientId)) {
-          const { res, timeout } = pendingAPI.get(packet.data.clientId);
-          clearTimeout(timeout);
-          pendingAPI.delete(packet.data.clientId);
-          if (!res.writableEnded) {
-            res.end(JSON.stringify(packet.data));
-          }
-          break;
-        }
         const client = clients.get(packet.data.clientId);
         if (client) sendWS(client.ws, packet);
       }
@@ -904,6 +747,29 @@ function handleClientPacket(clientId: string, packet: Packet): void {
   log('WSS', `📨 ${clientId}: ${packet.type} ${JSON.stringify(packet.data || {}).slice(0, 120)}`);
 
   switch (packet.type) {
+    // --- エクスプローラー用: seed-serverが直接返す ---
+    case 'get_status': {
+      const nodes = Array.from(fullNodes.values());
+      const bestNode = nodes.length > 0
+        ? nodes.reduce((a, b) => a.info.chainHeight >= b.info.chainHeight ? a : b)
+        : null;
+      sendWS(conn.ws, { type: 'status', data: {
+        version: CONFIG.VERSION,
+        nodes: fullNodes.size,
+        clients: clients.size,
+        seedPeers: seedPeers.size,
+        chainHeight: bestNode?.info.chainHeight || 0,
+        difficulty: bestNode?.info.difficulty || 1,
+        mySeedId,
+        uptime: process.uptime(),
+        nodeList: nodes.map(n => ({
+          id: n.info.id, host: n.info.host,
+          chainHeight: n.info.chainHeight, difficulty: n.info.difficulty,
+        })),
+      }});
+      break;
+    }
+
     case 'mine':
     case 'block_broadcast':
       broadcastToNodes({ type: 'block_broadcast', data: { ...packet.data, minerId: clientId } });

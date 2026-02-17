@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTR Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap');
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+:root{
+  --bg:#0a0e17;--card:#111827;--card2:#1a2332;--bdr:#1e293b;
+  --t1:#e2e8f0;--t2:#94a3b8;--t3:#64748b;
+  --cyan:#22d3ee;--blue:#3b82f6;--green:#10b981;--amber:#f59e0b;--rose:#f43f5e;--violet:#8b5cf6;
+  --mono:'JetBrains Mono',monospace;--sans:'Noto Sans JP',sans-serif;
+}
+
+body{background:var(--bg);color:var(--t1);font-family:var(--sans);min-height:100vh}
+
+/* Header */
+.hd{background:linear-gradient(180deg,#0f172a,transparent);border-bottom:1px solid var(--bdr);padding:1rem 1.5rem;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:.6rem}
+.logo-i{width:32px;height:32px;background:linear-gradient(135deg,var(--cyan),var(--blue));border-radius:7px;display:flex;align-items:center;justify-content:center;font:700 13px var(--mono);color:#000}
+.logo-t{font:600 1rem var(--mono);letter-spacing:2px}
+.logo-s{font-size:.65rem;color:var(--t3);letter-spacing:1px}
+.conn{display:flex;align-items:center;gap:.4rem;font:500 .72rem var(--mono)}
+.conn.on{color:var(--green)}
+.conn.off{color:var(--rose)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.mn{max-width:1400px;margin:0 auto;padding:1.2rem 1.5rem 3rem}
+
+/* Search */
+.search{margin-bottom:1.2rem}
+.search input{width:100%;padding:.7rem 1rem;border:1px solid var(--bdr);border-radius:8px;background:var(--card);color:var(--t1);font:.82rem var(--mono);outline:none;transition:border .2s}
+.search input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px #22d3ee22}
+.search input::placeholder{color:var(--t3)}
+
+/* Balance */
+.bal{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:1.2rem;margin-bottom:1.2rem;display:none}
+.bal.show{display:block}
+.bal-a{font:.78rem var(--mono);color:var(--violet);word-break:break-all;margin-bottom:.5rem}
+.bal-v{font:700 1.8rem var(--mono);color:var(--amber)}
+.bal-u{font-size:.8rem;color:var(--t3);font-weight:400}
+.bal-n{font:.7rem var(--mono);color:var(--t3);margin-top:.3rem}
+
+/* Stats */
+.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.8rem;margin-bottom:1.2rem}
+.sc{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:.9rem 1rem;transition:border .2s}
+.sc:hover{border-color:#22d3ee33}
+.sl{font:.65rem/1 var(--sans);font-weight:500;color:var(--t3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:.25rem}
+.sv{font:600 1.4rem var(--mono);color:var(--t1)}
+.su{font-size:.65rem;color:var(--t2);font-weight:400;margin-left:.2rem}
+
+/* Event log */
+.ev{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:.8rem;margin-bottom:1.2rem;max-height:120px;overflow-y:auto;font:.7rem var(--mono);color:var(--t3);line-height:1.6}
+.ev .new{color:var(--cyan)}
+.ev .blk{color:var(--green)}
+.ev .err{color:var(--rose)}
+
+/* Charts */
+.cg{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-bottom:1.2rem}
+.cc{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:1rem}
+.ct{font:.68rem/1 var(--sans);font-weight:500;color:var(--t3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:.6rem}
+.cw{position:relative;height:180px}
+
+/* Tabs */
+.tabs{display:flex;gap:.3rem;border-bottom:1px solid var(--bdr);margin-bottom:.8rem}
+.tab{padding:.5rem 1rem;font:.78rem var(--sans);font-weight:500;color:var(--t3);cursor:pointer;border:none;border-bottom:2px solid transparent;background:none;transition:all .2s}
+.tab:hover{color:var(--t2)}
+.tab.on{color:var(--cyan);border-bottom-color:var(--cyan)}
+
+/* Table */
+.tw{background:var(--card);border:1px solid var(--bdr);border-radius:10px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+thead th{padding:.6rem .8rem;text-align:left;font:.65rem var(--sans);font-weight:500;color:var(--t3);text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid var(--bdr);background:#0d1321}
+tbody tr{border-bottom:1px solid #1a2332;transition:background .1s}
+tbody tr:hover{background:var(--card2)}
+tbody tr:last-child{border:none}
+td{padding:.55rem .8rem;font:.75rem var(--mono);color:var(--t2)}
+.h-c{color:var(--cyan);font-weight:500}
+.x-c{color:var(--t3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-c{color:var(--violet);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.r-c{color:var(--amber)}
+.d-c{color:var(--green)}
+.tm-c{color:var(--t3);font-size:.7rem}
+.tx-c{text-align:center}
+.ld{text-align:center;padding:1.5rem;color:var(--t3);font-size:.8rem}
+
+@keyframes rowglow{0%{background:#22d3ee15}100%{background:transparent}}
+.new-row{animation:rowglow 2s ease-out}
+
+@media(max-width:900px){.cg{grid-template-columns:1fr}.sg{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.sg{grid-template-columns:1fr}table{font-size:.7rem}td,th{padding:.4rem .5rem}}
+</style>
+</head>
+<body>
+
+<div class="hd">
+  <div class="logo">
+    <div class="logo-i">B</div>
+    <div><div class="logo-t">BTR EXPLORER</div><div class="logo-s">Buturi Coin Blockchain</div></div>
+  </div>
+  <div class="conn off" id="conn"><div class="dot"></div><span id="connTxt">接続中...</span></div>
+</div>
+
+<div class="mn">
+  <div class="search"><input id="searchIn" placeholder="アドレス (0x...) またはブロック高さで検索..." /></div>
+  <div class="bal" id="bal">
+    <div class="bal-a" id="balA"></div>
+    <div class="bal-v"><span id="balV">0</span> <span class="bal-u">BTR</span></div>
+    <div class="bal-n">nonce: <span id="balN">0</span></div>
+  </div>
+
+  <div class="ev" id="evLog"><div>起動中...</div></div>
+
+  <div class="sg">
+    <div class="sc"><div class="sl">チェーン高さ</div><div class="sv" id="sH">-</div></div>
+    <div class="sc"><div class="sl">難易度</div><div class="sv" id="sD">-<span class="su">bits</span></div></div>
+    <div class="sc"><div class="sl">ノード</div><div class="sv" id="sN">-</div></div>
+    <div class="sc"><div class="sl">クライアント</div><div class="sv" id="sC">-</div></div>
+    <div class="sc"><div class="sl">稼働時間</div><div class="sv" id="sU">-</div></div>
+    <div class="sc"><div class="sl">接続先</div><div class="sv" id="sS" style="font-size:.85rem">-</div></div>
+  </div>
+
+  <div class="cg">
+    <div class="cc"><div class="ct">難易度推移</div><div class="cw"><canvas id="cD"></canvas></div></div>
+    <div class="cc"><div class="ct">ブロック時間 (秒)</div><div class="cw"><canvas id="cT"></canvas></div></div>
+    <div class="cc"><div class="ct">報酬 (BTR)</div><div class="cw"><canvas id="cR"></canvas></div></div>
+    <div class="cc"><div class="ct">TX数/ブロック</div><div class="cw"><canvas id="cX"></canvas></div></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-t="blk">ブロック</button>
+    <button class="tab" data-t="txs">トランザクション</button>
+  </div>
+
+  <div class="tw" id="blkTab">
+    <table><thead><tr><th>高さ</th><th>ハッシュ</th><th>マイナー</th><th>報酬</th><th>TX</th><th>難易度</th><th>時刻</th></tr></thead>
+    <tbody id="blkB"><tr><td colspan="7" class="ld">接続待ち...</td></tr></tbody></table>
+  </div>
+  <div class="tw" id="txsTab" style="display:none">
+    <table><thead><tr><th>署名</th><th>From</th><th>To</th><th>金額</th><th>種別</th></tr></thead>
+    <tbody id="txsB"><tr><td colspan="5" class="ld">接続待ち...</td></tr></tbody></table>
+  </div>
+</div>
+
+<script>
+const SEEDS_CDN='https://cdn.jsdelivr.net/gh/ShudoPhysicsClub/FUKKAZHARMAGTOK@main/src/server/fullserver/seeds.json';
+const DELIM='\nLINE_BREAK\n';
+const WEI=1000000000000000000n;
+
+function w2b(w){if(!w||w==='0')return'0';try{const b=BigInt(w),i=b/WEI,f=b%WEI;if(f===0n)return i.toString();return i+'.'+f.toString().padStart(18,'0').replace(/0+$/,'').slice(0,4)}catch{return'0'}}
+function sh(h){return h?h.slice(0,10)+'…'+h.slice(-6):'-'}
+function sa(a){return a?a.slice(0,8)+'…'+a.slice(-4):'-'}
+function ft(ts){if(!ts)return'-';return new Date(ts).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+function fu(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h>0?h+'h '+m+'m':m+'m'}
+
+let ws=null,seeds=[],curHost='',reconDelay=1000;
+let blocks=[];
+
+const evEl=document.getElementById('evLog');
+function ev(msg,cls=''){const d=document.createElement('div');d.className=cls;d.textContent='['+new Date().toLocaleTimeString('ja-JP')+'] '+msg;evEl.prepend(d);while(evEl.children.length>50)evEl.lastChild.remove()}
+
+// Charts
+const co={responsive:true,maintainAspectRatio:false,animation:{duration:200},plugins:{legend:{display:false}},
+  scales:{x:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9},maxTicksLimit:8}},
+          y:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9}}}}};
+function mc(id,col){return new Chart(document.getElementById(id),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:col,backgroundColor:col+'18',borderWidth:1.5,pointRadius:1.5,pointBackgroundColor:col,fill:true,tension:.3}]},options:{...co}})}
+const chD=mc('cD','#10b981'),chT=mc('cT','#3b82f6'),chR=mc('cR','#f59e0b'),chX=mc('cX','#8b5cf6');
+
+function updateCharts(){
+  if(blocks.length<2)return;
+  const s=[...blocks].sort((a,b)=>a.height-b.height);
+  const lb=s.map(b=>'#'+b.height);
+  chD.data.labels=lb;chD.data.datasets[0].data=s.map(b=>b.difficulty||0);chD.update();
+  const tm=[];for(let i=1;i<s.length;i++){const d=(s[i].timestamp-s[i-1].timestamp)/1000;tm.push(d>0?d:0)}
+  chT.data.labels=lb.slice(1);chT.data.datasets[0].data=tm;chT.update();
+  chR.data.labels=lb;chR.data.datasets[0].data=s.map(b=>parseFloat(w2b(b.reward)));chR.update();
+  chX.data.labels=lb;chX.data.datasets[0].data=s.map(b=>(b.transactions||[]).length);chX.update();
+}
+
+function renderBlocks(){
+  const tb=document.getElementById('blkB');
+  if(!blocks.length){tb.innerHTML='<tr><td colspan="7" class="ld">ブロックなし</td></tr>';return}
+  const s=[...blocks].sort((a,b)=>b.height-a.height);
+  tb.innerHTML=s.map(b=>'<tr><td class="h-c">#'+b.height+'</td><td class="x-c" title="'+b.hash+'">'+sh(b.hash)+'</td><td class="m-c" title="'+b.miner+'">'+sa(b.miner)+'</td><td class="r-c">'+w2b(b.reward)+' BTR</td><td class="tx-c">'+(b.transactions||[]).length+'</td><td class="d-c">'+(b.difficulty||'-')+'</td><td class="tm-c">'+ft(b.timestamp)+'</td></tr>').join('');
+}
+
+function renderTxs(txs){
+  const tb=document.getElementById('txsB');
+  if(!txs||!txs.length){tb.innerHTML='<tr><td colspan="5" class="ld">トランザクションなし</td></tr>';return}
+  tb.innerHTML=txs.map(tx=>'<tr><td class="x-c" title="'+(tx.signature||'')+'">'+sh(tx.signature||'')+'</td><td class="m-c" title="'+(tx.from||'')+'">'+sa(tx.from)+'</td><td class="m-c" title="'+(tx.to||'')+'">'+sa(tx.to)+'</td><td class="r-c">'+w2b(tx.amount)+' BTR</td><td>'+(tx.type||'transfer')+'</td></tr>').join('');
+}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');
+  const n=t.dataset.t;
+  document.getElementById('blkTab').style.display=n==='blk'?'':'none';
+  document.getElementById('txsTab').style.display=n==='txs'?'':'none';
+  if(n==='txs')send({type:'get_recent_transactions',data:{limit:30}});
+});
+
+// Search
+document.getElementById('searchIn').onkeydown=e=>{
+  if(e.key!=='Enter')return;
+  const q=e.target.value.trim();
+  if(!q){document.getElementById('bal').classList.remove('show');return}
+  if(q.startsWith('0x')){send({type:'get_balance',data:{address:q}});ev('検索: '+q)}
+  else{const h=parseInt(q);if(!isNaN(h)){send({type:'get_block',data:{height:h}});ev('ブロック検索: #'+h)}}
+};
+
+// WebSocket
+function send(p){if(ws&&ws.readyState===1)ws.send(JSON.stringify(p)+DELIM)}
+
+function handlePacket(p){
+  switch(p.type){
+    case 'hello':
+      ev('接続完了: v'+(p.data?.version||'?')+' シード#'+(p.data?.seedId??'?'),'new');
+      send({type:'get_status'});
+      send({type:'get_chain',data:{from:-50,to:0}});
+      break;
+
+    case 'status':{
+      const d=p.data;
+      document.getElementById('sH').textContent=d.chainHeight;
+      document.getElementById('sD').innerHTML=d.difficulty+'<span class="su">bits</span>';
+      document.getElementById('sN').textContent=d.nodes;
+      document.getElementById('sC').textContent=d.clients;
+      document.getElementById('sU').textContent=fu(d.uptime);
+      document.getElementById('sS').textContent=curHost.replace(/^wss?:\/\//,'').replace(/:.*$/,'');
+      break;
+    }
+
+    case 'height':{
+      const d=p.data;
+      document.getElementById('sH').textContent=d.height;
+      if(d.difficulty)document.getElementById('sD').innerHTML=d.difficulty+'<span class="su">bits</span>';
+      break;
+    }
+
+    case 'balance':{
+      const d=p.data;
+      document.getElementById('balA').textContent=d.address;
+      document.getElementById('balV').textContent=w2b(d.balance);
+      document.getElementById('balN').textContent=d.nonce||0;
+      document.getElementById('bal').classList.add('show');
+      break;
+    }
+
+    case 'chain_chunk':{
+      const bs=p.data?.blocks||[];
+      for(const b of bs){if(!blocks.find(x=>x.height===b.height))blocks.push(b)}
+      while(blocks.length>100)blocks.shift();
+      renderBlocks();updateCharts();
+      break;
+    }
+
+    case 'block':{
+      if(p.data?.height!==undefined){
+        ev('ブロック#'+p.data.height+' 取得','blk');
+        alert(JSON.stringify(p.data,null,2));
+      }
+      break;
+    }
+
+    case 'new_block':
+    case 'block_accepted':{
+      const b=p.data;
+      if(b&&b.height!==undefined){
+        if(!blocks.find(x=>x.height===b.height)){
+          blocks.push(b);
+          while(blocks.length>100)blocks.shift();
+          ev('\u26cf ブロック#'+b.height+' by '+sa(b.miner)+' +'+w2b(b.reward)+'BTR','blk');
+          renderBlocks();updateCharts();
+          send({type:'get_status'});
+        }
+      }
+      break;
+    }
+
+    case 'difficulty_update':
+      if(p.data?.difficulty)document.getElementById('sD').innerHTML=p.data.difficulty+'<span class="su">bits</span>';
+      break;
+
+    case 'transactions':
+      renderTxs(p.data?.transactions||p.data||[]);
+      break;
+
+    case 'new_tx':
+      ev('新TX受信','new');
+      break;
+
+    case 'sync_busy':
+      ev('ノード同期中...','err');
+      break;
+
+    case 'error':
+      ev('エラー: '+(p.data?.message||'不明'),'err');
+      break;
+  }
+}
+
+// Connection
+async function fetchSeeds(){try{const r=await fetch(SEEDS_CDN);const d=await r.json();return d.seeds||[]}catch{return[]}}
+
+function getURL(){
+  if(!seeds.length)return'wss://mail.shudo-physics.com:443';
+  const c=seeds.filter(s=>'wss://'+s.host+':443'!==curHost);
+  const s=c.length?c[Math.floor(Math.random()*c.length)]:seeds[Math.floor(Math.random()*seeds.length)];
+  return'wss://'+s.host+':443';
+}
+
+async function connect(){
+  if(!seeds.length)seeds=await fetchSeeds();
+  curHost=getURL();
+  ev('接続中: '+curHost);
+  document.getElementById('conn').className='conn off';
+  document.getElementById('connTxt').textContent='接続中...';
+
+  ws=new WebSocket(curHost);
+  ws.onopen=()=>{
+    document.getElementById('conn').className='conn on';
+    document.getElementById('connTxt').textContent='接続中';
+    reconDelay=1000;
+  };
+  ws.onmessage=e=>{
+    const parts=e.data.split(DELIM);
+    for(const p of parts){if(!p.trim())continue;try{handlePacket(JSON.parse(p))}catch{}}
+  };
+  ws.onclose=()=>{
+    document.getElementById('conn').className='conn off';
+    document.getElementById('connTxt').textContent='切断';
+    const d=Math.min(reconDelay,20000);
+    reconDelay=Math.min(reconDelay*2,20000);
+    ev('切断 → '+d/1000+'秒後に別シードへ','err');
+    setTimeout(connect,d);
+  };
+  ws.onerror=()=>{};
+}
+
+setInterval(()=>{if(ws&&ws.readyState===1)send({type:'get_status'})},15000);
+
+connect();
+</script>
+</body>
+</html>
