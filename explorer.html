@@ -178,8 +178,11 @@ function ev(msg,cls=''){const d=document.createElement('div');d.className=cls;d.
 const co={responsive:true,maintainAspectRatio:false,animation:{duration:200},plugins:{legend:{display:false}},
   scales:{x:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9},maxTicksLimit:8}},
           y:{display:true,grid:{color:'#1e293b'},ticks:{color:'#475569',font:{family:'JetBrains Mono',size:9}},min:0}}};
-function mc(id,col){return new Chart(document.getElementById(id),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:col,backgroundColor:col+'18',borderWidth:1.5,pointRadius:1.5,pointBackgroundColor:col,fill:true,tension:.3}]},options:{...co}})}
-const chD=mc('cD','#10b981'),chT=mc('cT','#3b82f6'),chR=mc('cR','#f59e0b'),chX=mc('cX','#8b5cf6');
+
+// ✅ chXだけ整数・min0・max10から拡張
+function mc(id,col,opts=null){return new Chart(document.getElementById(id),{type:'line',data:{labels:[],datasets:[{data:[],borderColor:col,backgroundColor:col+'18',borderWidth:1.5,pointRadius:1.5,pointBackgroundColor:col,fill:true,tension:.3}]},options:opts??{...co}})}
+const chD=mc('cD','#10b981'),chT=mc('cT','#3b82f6'),chR=mc('cR','#f59e0b');
+const chX=mc('cX','#8b5cf6',{...co,scales:{...co.scales,y:{...co.scales.y,min:0,ticks:{...co.scales.y.ticks,stepSize:1}}}});
 
 function updateCharts(){
   if(blocks.length<2)return;
@@ -189,6 +192,8 @@ function updateCharts(){
   const tm=[];for(let i=1;i<s.length;i++){const d=(s[i].timestamp-s[i-1].timestamp)/1000;tm.push(d>0?d:0)}
   chT.data.labels=lb.slice(1);chT.data.datasets[0].data=tm;chT.update();
   chR.data.labels=lb;chR.data.datasets[0].data=s.map(b=>parseFloat(w2b(b.reward)));chR.update();
+  chX.options.scales.y.max=Math.max(10,...chX.data.datasets[0].data);
+  chX.update();
   chX.data.labels=lb;chX.data.datasets[0].data=s.map(b=>(b.transactions||[]).length);chX.update();
 }
 
