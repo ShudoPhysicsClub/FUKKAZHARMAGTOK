@@ -8,6 +8,7 @@ import { connect } from 'net';
 import { createHash } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import * as fs from 'fs';
+import { exit } from 'process';
 class Ed25519 {
     static p = 2n ** 255n - 19n;
     static L = 2n ** 252n + 27742317777372353535851937790883648493n;
@@ -1383,10 +1384,7 @@ function connectToSeed() {
     });
 }
 function scheduleReconnect() {
-    const delay = Math.min(reconnectDelay, 20000);
-    reconnectDelay = Math.min(reconnectDelay * 2, 20000);
-    log('Net', `${delay / 1000}秒後に別シードへ再接続...`);
-    setTimeout(() => connectToSeed(), delay);
+    exit(500);
 }
 function sendToSeed(packet) {
     if (seedSocket && !seedSocket.destroyed) {
