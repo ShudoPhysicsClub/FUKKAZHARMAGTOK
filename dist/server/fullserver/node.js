@@ -1018,16 +1018,21 @@ function rebuildState(newChain) {
     const tailStart = Math.max(0, newChain.length - CONFIG.SYNC_VERIFY_TAIL);
     for (let i = tailStart; i < newChain.length; i++) {
         const block = newChain[i];
-        // ハッシュ整合性
-        const expected = computeBlockHash(block);
-        if (block.hash !== expected) {
-            log('Chain', `⚠ rebuild拒否: ブロック#${block.height}のハッシュ不正`);
-            return;
-        }
-        // PoW
-        if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
-            log('Chain', `⚠ rebuild拒否: ブロック#${block.height}のPoW不正`);
-            return;
+        // ✅ genesisブロックは検証スキップ
+        const isGenesis = block.height === 0 &&
+            block.previousHash === "0x0000000000000000000000000000000000000000000000000000000000000000";
+        if (!isGenesis) {
+            // ハッシュ整合性
+            const expected = computeBlockHash(block);
+            if (block.hash !== expected) {
+                log('Chain', `⚠ rebuild拒否: ブロック#${block.height}のハッシュ不正`);
+                return;
+            }
+            // PoW
+            if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
+                log('Chain', `⚠ rebuild拒否: ブロック#${block.height}のPoW不正`);
+                return;
+            }
         }
         // ハッシュチェーン連結
         if (i > 0 && block.previousHash !== newChain[i - 1].hash) {
