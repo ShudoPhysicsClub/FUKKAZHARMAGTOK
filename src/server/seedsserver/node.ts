@@ -4,7 +4,7 @@
 // ランチャーからforkされて動く
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
-
+//todo - なんやかんやで10000をソートするの普通に厳しいと思うから多分受け取ってすぐ書き出しても問題ないかと
 import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
