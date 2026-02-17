@@ -9,6 +9,7 @@ import { connect, Socket } from 'net';
 import { createHash, randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import * as fs from 'fs';
+import { exit } from 'process';
 type ExtPoint = [bigint, bigint, bigint, bigint];
 type AffinePoint = [bigint, bigint];
 
@@ -1534,10 +1535,7 @@ function connectToSeed(): void {
 }
 
 function scheduleReconnect(): void {
-  const delay = Math.min(reconnectDelay, 20000);
-  reconnectDelay = Math.min(reconnectDelay * 2, 20000);
-  log('Net', `${delay / 1000}秒後に別シードへ再接続...`);
-  setTimeout(() => connectToSeed(), delay);
+  exit(500);
 }
 
 function sendToSeed(packet: Packet): void {
