@@ -1336,7 +1336,7 @@ function finishSync() {
     sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
     log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
-// sync_chain/ からストリーミングrebuild
+// sync_chain/ のブロックを既存チェーンとマージして適用
 function applySyncedChain() {
     const files = fs.readdirSync(SYNC_DIR).sort();
     if (files.length === 0) {
@@ -1344,62 +1344,115 @@ function applySyncedChain() {
         finishSync();
         return;
     }
-    if (files.length <= chain.length) {
-        log('Sync', `同期チェーン (${files.length}) ≤ 現在 (${chain.length}) → スキップ`);
+    // 受信ブロックの先頭と末尾を読む
+    const firstBlock = JSON.parse(readFileSync(`${SYNC_DIR}/${files[0]}`, 'utf-8'));
+    const lastBlock = JSON.parse(readFileSync(`${SYNC_DIR}/${files[files.length - 1]}`, 'utf-8'));
+    const syncStartHeight = firstBlock.height;
+    const syncEndHeight = lastBlock.height;
+    log('Sync', `受信ブロック: #${syncStartHeight}〜#${syncEndHeight} (${files.length}件), 現在のチェーン: ${chain.length}ブロック`);
+    // 受信チェーンの末尾が現在のチェーンより高くなければスキップ
+    if (syncEndHeight + 1 <= chain.length) {
+        log('Sync', `受信末尾 #${syncEndHeight} ≤ 現在 #${chain.length - 1} → スキップ`);
         cleanSyncDir();
         finishSync();
         return;
     }
-    log('Sync', `ストリーミングrebuild開始: ${files.length}ブロック`);
-    chain.length = 0;
-    accounts.clear();
-    tokens.clear();
-    ammPools.clear();
-    totalMined = "0";
-    currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
-    lastBlockHash = '';
-    isRebuilding = true;
-    const verifyStart = Math.max(0, files.length - CONFIG.SYNC_VERIFY_TAIL);
-    for (let i = 0; i < files.length; i++) {
-        try {
-            const block = JSON.parse(readFileSync(`${SYNC_DIR}/${files[i]}`, 'utf-8'));
-            // 末尾SYNC_VERIFY_TAILブロックは厳密検証
-            if (i >= verifyStart) {
-                const isGenesis = block.height === 0 &&
-                    block.previousHash === "0x0000000000000000000000000000000000000000000000000000000000000000";
-                if (!isGenesis) {
-                    if (block.hash !== computeBlockHash(block)) {
-                        log('Chain', `⚠ sync rebuild拒否: #${block.height}ハッシュ不正`);
-                        isRebuilding = false;
-                        cleanSyncDir();
-                        return;
-                    }
-                    if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
-                        log('Chain', `⚠ sync rebuild拒否: #${block.height} PoW不正`);
-                        isRebuilding = false;
-                        cleanSyncDir();
-                        return;
-                    }
-                }
-                // ハッシュチェーン連結（chainにpushされた直前ブロックと比較）
-                if (chain.length > 0 && block.previousHash !== chain[chain.length - 1].hash) {
-                    log('Chain', `⚠ sync rebuild拒否: #${block.height} previousHash不一致`);
-                    isRebuilding = false;
-                    cleanSyncDir();
-                    return;
-                }
-            }
-            applyBlock(block);
-        }
-        catch (e) {
-            log('Chain', `⚠ sync rebuild失敗 #${i}: ${e}`);
-            isRebuilding = false;
+    // 差分同期: syncStartHeight > 0 かつ既存チェーンと繋がる場合
+    if (syncStartHeight > 0 && syncStartHeight <= chain.length) {
+        log('Sync', `差分マージ: 既存#0〜#${syncStartHeight - 1} + 受信#${syncStartHeight}〜#${syncEndHeight}`);
+        // ハッシュチェーン連結検証
+        if (chain[syncStartHeight - 1] && firstBlock.previousHash !== chain[syncStartHeight - 1].hash) {
+            log('Sync', `⚠ チェーン連結不一致 → フォーク検出、スキップ`);
             cleanSyncDir();
+            finishSync();
             return;
         }
+        // 受信ブロックの末尾を検証
+        const verifyCount = Math.min(files.length, CONFIG.SYNC_VERIFY_TAIL);
+        const verifyStart = files.length - verifyCount;
+        for (let i = verifyStart; i < files.length; i++) {
+            const block = JSON.parse(readFileSync(`${SYNC_DIR}/${files[i]}`, 'utf-8'));
+            if (block.hash !== computeBlockHash(block)) {
+                log('Chain', `⚠ 差分sync拒否: #${block.height}ハッシュ不正`);
+                cleanSyncDir();
+                finishSync();
+                return;
+            }
+            if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
+                log('Chain', `⚠ 差分sync拒否: #${block.height} PoW不正`);
+                cleanSyncDir();
+                finishSync();
+                return;
+            }
+        }
+        // 既存チェーンの先頭部分を保持しつつマージ→全体rebuild
+        const mergedChain = chain.slice(0, syncStartHeight);
+        for (const file of files) {
+            mergedChain.push(JSON.parse(readFileSync(`${SYNC_DIR}/${file}`, 'utf-8')));
+        }
+        // selectChainでワーク量比較→rebuildState
+        selectChain(mergedChain);
+        log('Chain', `差分sync完了: ${chain.length}ブロック`);
+        cleanSyncDir();
+        finishSync();
+        return;
     }
-    isRebuilding = false;
-    log('Chain', `sync rebuild完了: ${chain.length}ブロック (末尾${CONFIG.SYNC_VERIFY_TAIL}検証済み)`);
+    // フル同期: height 0 から始まるチェーン
+    if (syncStartHeight === 0 && syncEndHeight + 1 > chain.length) {
+        log('Sync', `フルrebuild開始: ${files.length}ブロック`);
+        chain.length = 0;
+        accounts.clear();
+        tokens.clear();
+        ammPools.clear();
+        totalMined = "0";
+        currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
+        lastBlockHash = '';
+        isRebuilding = true;
+        const verifyStart = Math.max(0, files.length - CONFIG.SYNC_VERIFY_TAIL);
+        for (let i = 0; i < files.length; i++) {
+            try {
+                const block = JSON.parse(readFileSync(`${SYNC_DIR}/${files[i]}`, 'utf-8'));
+                if (i >= verifyStart) {
+                    const isGenesis = block.height === 0 &&
+                        block.previousHash === "0x0000000000000000000000000000000000000000000000000000000000000000";
+                    if (!isGenesis) {
+                        if (block.hash !== computeBlockHash(block)) {
+                            log('Chain', `⚠ フルrebuild拒否: #${block.height}ハッシュ不正`);
+                            isRebuilding = false;
+                            cleanSyncDir();
+                            return;
+                        }
+                        if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
+                            log('Chain', `⚠ フルrebuild拒否: #${block.height} PoW不正`);
+                            isRebuilding = false;
+                            cleanSyncDir();
+                            return;
+                        }
+                    }
+                    if (chain.length > 0 && block.previousHash !== chain[chain.length - 1].hash) {
+                        log('Chain', `⚠ フルrebuild拒否: #${block.height} previousHash不一致`);
+                        isRebuilding = false;
+                        cleanSyncDir();
+                        return;
+                    }
+                }
+                applyBlock(block);
+            }
+            catch (e) {
+                log('Chain', `⚠ フルrebuild失敗 #${i}: ${e}`);
+                isRebuilding = false;
+                cleanSyncDir();
+                return;
+            }
+        }
+        isRebuilding = false;
+        log('Chain', `フルrebuild完了: ${chain.length}ブロック (末尾${CONFIG.SYNC_VERIFY_TAIL}検証済み)`);
+        cleanSyncDir();
+        finishSync();
+        return;
+    }
+    // ここに来る場合: syncStartHeight > chain.length（ギャップがある）
+    log('Sync', `⚠ ギャップ検出: 受信開始#${syncStartHeight} > 現在チェーン長${chain.length} → スキップ`);
     cleanSyncDir();
     finishSync();
 }
