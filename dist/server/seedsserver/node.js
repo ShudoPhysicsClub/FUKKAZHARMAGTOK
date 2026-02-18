@@ -1,6 +1,6 @@
 // ============================================================
-// BTR (Buturi Coin) - フルノード v2.1.0 BigInt完全対応版
-// LWMA難易度調整 / 同期中通信遮断 / チェーンベース難易度検証
+// BTR (Buturi Coin) - フルノード v3.0
+// LWMA難易度調整 / ストリーミング同期 / pending考慮nonce&残高
 // ランチャーからforkされて動く
 // 全金額は Wei文字列 (1 BTR = 10^18 wei)
 // ============================================================
@@ -8,7 +8,6 @@ import { connect } from 'net';
 import { createHash } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import * as fs from 'fs';
-import { exit } from 'process';
 class Ed25519 {
     static p = 2n ** 255n - 19n;
     static L = 2n ** 252n + 27742317777372353535851937790883648493n;
@@ -1268,11 +1267,38 @@ function loadState() {
 // ============================================================
 // チェーン同期
 // ============================================================
-let syncBuffer = [];
-const MAX_SYNC_BUFFER = 10000; // 最大1万ブロックまで
+// ============================================================
+// 同期管理（ストリーミング: チャンクごとに即ディスク書き出し、上限なし）
+// ============================================================
+const SYNC_DIR = './sync_chain';
+let syncReceivedBlocks = 0;
+let syncExpectedHeight = 0;
+let syncLastHash = '';
 let syncExpectedFrom = 0;
 let syncTimer = null;
 let isSyncing = false;
+function cleanSyncDir() {
+    try {
+        if (existsSync(SYNC_DIR)) {
+            for (const f of fs.readdirSync(SYNC_DIR))
+                fs.unlinkSync(`${SYNC_DIR}/${f}`);
+        }
+        else {
+            fs.mkdirSync(SYNC_DIR, { recursive: true });
+        }
+    }
+    catch (e) {
+        log('Sync', `sync_chain クリア失敗: ${e}`);
+    }
+}
+function writeSyncBlocks(blocks) {
+    if (!existsSync(SYNC_DIR))
+        fs.mkdirSync(SYNC_DIR, { recursive: true });
+    for (const block of blocks) {
+        const filename = `${SYNC_DIR}/${block.height.toString().padStart(10, '0')}.json`;
+        writeFileSync(filename, JSON.stringify(block));
+    }
+}
 function startSyncTimeout() {
     if (syncTimer)
         clearTimeout(syncTimer);
@@ -1280,7 +1306,8 @@ function startSyncTimeout() {
         if (isSyncing) {
             log('Sync', 'タイムアウト — フォールバック');
             isSyncing = false;
-            syncBuffer = [];
+            syncReceivedBlocks = 0;
+            cleanSyncDir();
             sendToSeed({ type: 'request_chain', data: { fromHeight: chain.length } });
             syncTimer = setTimeout(() => {
                 if (chain.length <= 1)
@@ -1288,7 +1315,7 @@ function startSyncTimeout() {
                 syncTimer = null;
             }, 15000);
         }
-    }, 10000);
+    }, 15000);
 }
 function finishSync() {
     isSyncing = false;
@@ -1296,7 +1323,6 @@ function finishSync() {
         clearTimeout(syncTimer);
         syncTimer = null;
     }
-    // チェーンからLWMAで正しい難易度を再計算
     currentDifficulty = calculateDifficultyFromChain(chain);
     log('Sync', `難易度をチェーンから再計算: diff=${currentDifficulty}`);
     saveState();
@@ -1310,13 +1336,79 @@ function finishSync() {
     sendToSeed({ type: 'height', data: { height: chain.length, difficulty: currentDifficulty } });
     log('Sync', `同期完了: ${chain.length}ブロック, 難易度=${currentDifficulty}`);
 }
+// sync_chain/ からストリーミングrebuild
+function applySyncedChain() {
+    const files = fs.readdirSync(SYNC_DIR).sort();
+    if (files.length === 0) {
+        cleanSyncDir();
+        finishSync();
+        return;
+    }
+    if (files.length <= chain.length) {
+        log('Sync', `同期チェーン (${files.length}) ≤ 現在 (${chain.length}) → スキップ`);
+        cleanSyncDir();
+        finishSync();
+        return;
+    }
+    log('Sync', `ストリーミングrebuild開始: ${files.length}ブロック`);
+    chain.length = 0;
+    accounts.clear();
+    tokens.clear();
+    ammPools.clear();
+    totalMined = "0";
+    currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
+    lastBlockHash = '';
+    isRebuilding = true;
+    const verifyStart = Math.max(0, files.length - CONFIG.SYNC_VERIFY_TAIL);
+    for (let i = 0; i < files.length; i++) {
+        try {
+            const block = JSON.parse(readFileSync(`${SYNC_DIR}/${files[i]}`, 'utf-8'));
+            // 末尾SYNC_VERIFY_TAILブロックは厳密検証
+            if (i >= verifyStart) {
+                const isGenesis = block.height === 0 &&
+                    block.previousHash === "0x0000000000000000000000000000000000000000000000000000000000000000";
+                if (!isGenesis) {
+                    if (block.hash !== computeBlockHash(block)) {
+                        log('Chain', `⚠ sync rebuild拒否: #${block.height}ハッシュ不正`);
+                        isRebuilding = false;
+                        cleanSyncDir();
+                        return;
+                    }
+                    if (!meetsTargetDifficulty(block.hash, block.difficulty)) {
+                        log('Chain', `⚠ sync rebuild拒否: #${block.height} PoW不正`);
+                        isRebuilding = false;
+                        cleanSyncDir();
+                        return;
+                    }
+                }
+                // ハッシュチェーン連結（chainにpushされた直前ブロックと比較）
+                if (chain.length > 0 && block.previousHash !== chain[chain.length - 1].hash) {
+                    log('Chain', `⚠ sync rebuild拒否: #${block.height} previousHash不一致`);
+                    isRebuilding = false;
+                    cleanSyncDir();
+                    return;
+                }
+            }
+            applyBlock(block);
+        }
+        catch (e) {
+            log('Chain', `⚠ sync rebuild失敗 #${i}: ${e}`);
+            isRebuilding = false;
+            cleanSyncDir();
+            return;
+        }
+    }
+    isRebuilding = false;
+    log('Chain', `sync rebuild完了: ${chain.length}ブロック (末尾${CONFIG.SYNC_VERIFY_TAIL}検証済み)`);
+    cleanSyncDir();
+    finishSync();
+}
 // ============================================================
 // シードノード接続（seeds.json ベース、ランダム選択、指数バックオフ）
 // ============================================================
 let seedSocket = null;
 let seedBuffer = '';
 let currentSeedHost = '';
-let reconnectDelay = 1000;
 function loadSeeds() {
     try {
         if (existsSync('./seeds.json')) {
@@ -1342,9 +1434,10 @@ function connectToSeed() {
         : seeds[Math.floor(Math.random() * seeds.length)];
     currentSeedHost = seed.host;
     log('Net', `シードノードに接続中: ${seed.host}:${CONFIG.SEED_PORT} (id=${seed.id})`);
+    let connected = false;
     seedSocket = connect(CONFIG.SEED_PORT, seed.host, () => {
+        connected = true;
         log('Net', `✅ 接続成功: ${seed.host}`);
-        reconnectDelay = 1000; // リセット
         sendToSeed({
             type: 'register',
             data: { chainHeight: chain.length, difficulty: currentDifficulty }
@@ -1373,18 +1466,21 @@ function connectToSeed() {
         }
     });
     seedSocket.on('close', () => {
-        log('Net', `❌ シード切断 (${currentSeedHost}) → 別シードへ再接続`);
+        log('Net', `❌ シード切断 (${currentSeedHost}) → exit(1) でランチャーに委譲`);
         seedSocket = null;
-        scheduleReconnect();
+        process.exit(1);
     });
     seedSocket.on('error', (err) => {
         log('Net', `❌ 接続エラー (${seed.host}): ${err.message}`);
-        seedSocket = null;
-        scheduleReconnect();
+        if (!connected) {
+            // 接続前のエラー → ソケットを破棄してexit
+            seedSocket?.destroy();
+            seedSocket = null;
+            log('Net', '→ exit(1) でランチャーに委譲');
+            process.exit(1);
+        }
+        // 接続後のエラーはclose側で処理される
     });
-}
-function scheduleReconnect() {
-    exit(500);
 }
 function sendToSeed(packet) {
     if (seedSocket && !seedSocket.destroyed) {
@@ -1399,7 +1495,7 @@ async function handlePacket(packet) {
     const blockedDuringSyncWithResponse = new Set([
         'get_balance', 'get_height', 'get_block_template', 'get_chain',
         'get_token', 'get_tokens_list', 'get_rate', 'get_mempool',
-        'get_recent_transactions', 'get_block', 'tx', 'admin_status'
+        'get_recent_transactions', 'get_block', 'tx'
     ]);
     const blockedDuringSyncSilent = new Set([
         'block_broadcast', 'tx_broadcast'
@@ -1532,29 +1628,19 @@ async function handlePacket(packet) {
             const clientId = packet.data?.clientId;
             const address = packet.data?.address;
             const account = peekAccount(address);
-            const adminRequest = packet.data?.adminRequest || false;
-            if (adminRequest) {
-                sendToSeed({
-                    type: 'admin_account',
-                    data: { clientId, found: true, account: { address: account.address, balance: account.balance, nonce: account.nonce, tokens: account.tokens } }
-                });
-            }
-            else {
-                // pending考慮: account.nonceとpending内の最大nonce+1のうち大きい方
-                const pendingForAddr = pendingTxs.filter(p => p.from === address);
-                let pendingNonce = account.nonce;
-                if (pendingForAddr.length > 0) {
-                    const maxPendingNonce = Math.max(...pendingForAddr.map(p => p.nonce));
-                    // pending内の最大nonceがaccount.nonce以上の場合のみ有効
-                    if (maxPendingNonce >= account.nonce) {
-                        pendingNonce = maxPendingNonce + 1;
-                    }
+            // pending考慮: account.nonceとpending内の最大nonce+1のうち大きい方
+            const pendingForAddr = pendingTxs.filter(p => p.from === address);
+            let pendingNonce = account.nonce;
+            if (pendingForAddr.length > 0) {
+                const maxPendingNonce = Math.max(...pendingForAddr.map(p => p.nonce));
+                if (maxPendingNonce >= account.nonce) {
+                    pendingNonce = maxPendingNonce + 1;
                 }
-                sendToSeed({
-                    type: 'balance',
-                    data: { clientId, address, balance: account.balance, nonce: account.nonce, pendingNonce, tokens: account.tokens }
-                });
             }
+            sendToSeed({
+                type: 'balance',
+                data: { clientId, address, balance: account.balance, nonce: account.nonce, pendingNonce, tokens: account.tokens }
+            });
             break;
         }
         case 'get_height': {
@@ -1586,18 +1672,14 @@ async function handlePacket(packet) {
             const clientId = packet.data?.clientId;
             let from = packet.data?.from || 0;
             let to = packet.data?.to || chain.length;
-            const isAdmin = packet.data?.admin || false;
             if (from < 0) {
                 from = Math.max(0, chain.length + from);
                 to = chain.length;
             }
+            if (to - from > 200)
+                to = from + 200;
             const chunk = chain.slice(from, to);
-            if (isAdmin) {
-                sendToSeed({ type: 'admin_blocks', data: { clientId, blocks: chunk } });
-            }
-            else {
-                sendToSeed({ type: 'chain_chunk', data: { clientId, from, to, blocks: chunk } });
-            }
+            sendToSeed({ type: 'chain_chunk', data: { clientId, from, to, blocks: chunk } });
             break;
         }
         case 'get_token': {
@@ -1625,18 +1707,15 @@ async function handlePacket(packet) {
         }
         case 'get_mempool': {
             const clientId = packet.data?.clientId;
-            const isAdmin = packet.data?.admin || false;
-            const responseType = isAdmin ? 'admin_mempool' : 'mempool';
             sendToSeed({
-                type: responseType,
+                type: 'mempool',
                 data: { clientId, count: pendingTxs.length, transactions: pendingTxs.slice(0, 50) }
             });
             break;
         }
         case 'get_recent_transactions': {
             const clientId = packet.data?.clientId;
-            const limit = packet.data?.limit || 50;
-            const isAdmin = packet.data?.admin || false;
+            const limit = Math.min(packet.data?.limit || 50, 200);
             const recentTxs = [];
             for (let i = chain.length - 1; i >= 0 && recentTxs.length < limit; i--) {
                 for (const tx of chain[i].transactions) {
@@ -1645,8 +1724,7 @@ async function handlePacket(packet) {
                     recentTxs.push(tx);
                 }
             }
-            const responseType = isAdmin ? 'admin_transactions' : 'transactions';
-            sendToSeed({ type: responseType, data: { clientId, transactions: recentTxs } });
+            sendToSeed({ type: 'transactions', data: { clientId, transactions: recentTxs } });
             break;
         }
         case 'get_block': {
@@ -1688,7 +1766,7 @@ async function handlePacket(packet) {
             const chunkIndex = packet.data?.chunkIndex || 1;
             const totalChunks = packet.data?.totalChunks || 1;
             const totalHeight = packet.data?.totalHeight || 0;
-            // 基本サニティチェック: ブロックにhash/height/previousHashがあるか
+            // 基本サニティチェック
             let valid = true;
             for (const b of blocks) {
                 if (typeof b.height !== 'number' || !b.hash || !b.previousHash) {
@@ -1699,31 +1777,18 @@ async function handlePacket(packet) {
             }
             if (!valid)
                 break;
-            log('Sync', `チャンク受信: ${chunkIndex}/${totalChunks} (${blocks.length}ブロック)`);
-            syncBuffer.push(...blocks);
-            if (syncBuffer.length > MAX_SYNC_BUFFER) {
-                log('Sync', `⚠ syncBuffer上限超過 (${syncBuffer.length}) → 同期中止`);
-                syncBuffer = [];
-                finishSync();
-                break;
-            }
+            // チャンクごとに即ディスク書き出し
+            writeSyncBlocks(blocks);
+            syncReceivedBlocks += blocks.length;
+            syncExpectedHeight = totalHeight;
+            log('Sync', `チャンク受信: ${chunkIndex}/${totalChunks} (${blocks.length}ブロック, 累計${syncReceivedBlocks})`);
             if (syncTimer)
                 clearTimeout(syncTimer);
             startSyncTimeout();
-            if (chunkIndex >= totalChunks || syncBuffer.length >= totalHeight) {
-                log('Sync', `全チャンク受信完了: ${syncBuffer.length}ブロック`);
-                syncBuffer.sort((a, b) => a.height - b.height);
-                if (syncBuffer.length > chain.length) {
-                    if (syncBuffer[0].height === 0) {
-                        selectChain(syncBuffer);
-                    }
-                    else if (syncBuffer[0].height <= chain.length) {
-                        const merged = [...chain.slice(0, syncBuffer[0].height), ...syncBuffer];
-                        selectChain(merged);
-                    }
-                }
-                syncBuffer = [];
-                finishSync();
+            // 全チャンク到着 → ディスクからストリーミングrebuild
+            if (chunkIndex >= totalChunks || syncReceivedBlocks >= totalHeight) {
+                log('Sync', `全チャンク受信完了: ${syncReceivedBlocks}ブロック → ディスクからrebuild`);
+                applySyncedChain();
             }
             break;
         }
@@ -1751,31 +1816,25 @@ async function handlePacket(packet) {
             const targetNodeId = packet.data?.targetNodeId;
             const fromHeight = packet.data?.fromHeight || 0;
             if (chain.length > fromHeight) {
-                const blocks = chain.slice(fromHeight);
-                sendToSeed({ type: 'chain_sync_direct', data: { targetNodeId, blocks } });
-                log('Sync', `フォールバック送信: → ${targetNodeId} (${blocks.length}ブロック)`);
+                // send_chain_toと同じチャンク分割方式
+                const CHUNK_SIZE = 50;
+                const slice = chain.slice(fromHeight);
+                const totalChunks = Math.ceil(slice.length / CHUNK_SIZE);
+                for (let i = 0; i < slice.length; i += CHUNK_SIZE) {
+                    const chunk = slice.slice(i, i + CHUNK_SIZE);
+                    sendToSeed({ type: 'chain_sync_direct', data: { targetNodeId, blocks: chunk } });
+                }
+                log('Sync', `フォールバック送信: → ${targetNodeId} (${slice.length}ブロック, ${totalChunks}チャンク)`);
             }
-            break;
-        }
-        // --- アップデート ---
-        case 'update': {
-            log('Update', `アップデート受信: v${packet.data?.version}`);
-            if (process.send) {
-                process.send({ type: 'update', data: packet.data });
-            }
-            break;
-        }
-        // --- trusted_keys同期 ---
-        case 'sync_trusted_keys': {
-            writeFileSync('./trusted_keys.json', JSON.stringify(packet.data, null, 2));
-            log('Trust', 'trusted_keys.json 同期');
             break;
         }
         case 'sync_needed': {
             log('Sync', `同期要求受信: 現在=${chain.length}, ネットワーク最長=${packet.data?.bestHeight || '?'}`);
             if (!isSyncing) {
                 isSyncing = true;
-                syncBuffer = [];
+                syncReceivedBlocks = 0;
+                syncExpectedHeight = 0;
+                cleanSyncDir();
                 startSyncTimeout();
             }
             break;
@@ -1818,11 +1877,12 @@ function startPeriodicTasks() {
 // ============================================================
 function main() {
     console.log('========================================');
-    console.log('  BTR (Buturi Coin) Full Node v2.1.0');
+    console.log('  BTR (Buturi Coin) Full Node v3.0');
     console.log('  BigInt Edition (Wei = 10^18)');
-    console.log('  LWMA Difficulty Adjustment');
+    console.log('  LWMA + Streaming Sync');
     console.log('========================================');
     loadState();
+    cleanSyncDir(); // 前回の同期残骸をクリア
     connectToSeed();
     startPeriodicTasks();
     const seeds = loadSeeds();
@@ -1830,5 +1890,12 @@ function main() {
     log('Init', `チェーン高さ: ${chain.length}, 難易度: ${currentDifficulty}`);
     log('Init', `シードノード: ${seeds.length}件 (${seeds.map(s => s.host).join(', ')})`);
 }
+// プロセス例外ハンドラ（クラッシュ防止、launcherの再起動に頼らない）
+process.on('uncaughtException', (err) => {
+    log('Fatal', `未キャッチ例外: ${err.message}\n${err.stack}`);
+});
+process.on('unhandledRejection', (reason) => {
+    log('Fatal', `未処理Promise拒否: ${reason}`);
+});
 main();
 //# sourceMappingURL=node.js.map
