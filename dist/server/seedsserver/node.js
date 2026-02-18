@@ -1168,10 +1168,14 @@ function rebuildState(newChain) {
     currentDifficulty = CONFIG.INITIAL_DIFFICULTY;
     lastBlockHash = '';
     isRebuilding = true;
-    for (const block of newChain) {
-        applyBlock(block);
+    try {
+        for (const block of newChain) {
+            applyBlock(block);
+        }
     }
-    isRebuilding = false;
+    finally {
+        isRebuilding = false;
+    }
     log('Chain', `rebuild完了: ${newChain.length}ブロック (末尾${CONFIG.SYNC_VERIFY_TAIL}検証済み)`);
 }
 // ============================================================
