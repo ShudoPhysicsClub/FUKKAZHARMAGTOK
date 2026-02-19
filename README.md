@@ -262,13 +262,7 @@ const rewardWei = (BigInt(rewardBtr) * WEI_PER_BTR).toString();
 
 ### 9.2 配布方式
 
-| 方式 | 説明 |
-|------|------|
-| `creator` | 全額作成者に渡る |
-| `mining` | BTRマイニングと一緒に徐々に発行（100トークン/ブロック） |
-| `amm` | 全量AMMプールに投入（クライアントデフォルト） |
-| `split` | 指定比率（poolRatio: 0〜1）で作成者とプールに分配 |
-| `airdrop` | 接続中のウォレットに均等配布 |
+一律でAMMプール投入
 
 ### 9.3 初期流動性
 
